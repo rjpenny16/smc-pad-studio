@@ -1,0 +1,97 @@
+{
+  "release": "0.6.0",
+  "platform": "Windows 11 x64",
+  "sha256": "8d7485a9e894311e86c35efa5c986723d95bc7fb7b81b5f3df05e5ca64434379",
+  "regressionTests": {
+    "passed": 7,
+    "hardwareWrites": false,
+    "desktopShortcutsExecuted": false
+  },
+  "packagedNativeUI": {
+    "ok": true,
+    "results": [
+      {
+        "pads": 16,
+        "knobs": 8,
+        "profile": true,
+        "page": true,
+        "bank": true,
+        "zeroVolume": true,
+        "navigation": true,
+        "pause": true,
+        "importTarget": true,
+        "macroPreview": true,
+        "physicalPadOrientation": true
+      },
+      {
+        "nativeAudio": true,
+        "duration": 1.0,
+        "silentTrimmedLoop": true
+      },
+      {
+        "nativeHardwareReadBank": "A",
+        "pads": 16,
+        "performanceInput": "MIDIIN2 (SMC-PAD)",
+        "configurationInput": 0
+      },
+      {
+        "nativeHardwareReadBank": "B",
+        "pads": 16,
+        "performanceInput": "MIDIIN2 (SMC-PAD)",
+        "configurationInput": 0
+      },
+      {
+        "layoutWidth": 1440,
+        "width": 1426,
+        "body": 1426,
+        "content": 1207,
+        "inspector": "833.2px 300px"
+      },
+      {
+        "layoutWidth": 1100,
+        "width": 1086,
+        "body": 1086,
+        "content": 895,
+        "inspector": "561.2px 280px"
+      },
+      {
+        "layoutWidth": 800,
+        "width": 786,
+        "body": 786,
+        "content": 699,
+        "inspector": "667.2px"
+      }
+    ],
+    "hiddenRuntimeAlive": true
+  },
+  "hardwareRGB": {
+    "started": "2026-09-30 19:31:16",
+    "banks": {
+      "A": {
+        "readPads": 16,
+        "changedPadVerified": true,
+        "batchVerified": 16,
+        "colorsRestored": true
+      },
+      "B": {
+        "readPads": 16,
+        "changedPadVerified": true,
+        "batchVerified": 16,
+        "colorsRestored": true
+      }
+    },
+    "restored": true,
+    "configurationInput": "SMC-PAD",
+    "configurationOutput": "SMC-PAD",
+    "ok": true,
+    "fullConfigurationUnchanged": true
+  },
+  "singleInstanceRestore": true,
+  "manualChecksRemaining": [
+    "Physical pad and encoder presses",
+    "Audible quality and latency",
+    "USB unplug/replug recovery",
+    "Visual inspection of native window; desktop was locked during capture"
+  ],
+  "runtime": "Bundled native desktop bridge; no local HTTP endpoint"
+}

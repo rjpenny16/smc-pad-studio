@@ -1,0 +1,348 @@
+"""Native state, action queue, profile switching, and the narrow UI bridge."""
+from collections import deque
+import copy
+import ctypes as C
+from ctypes import wintypes as W
+import hashlib
+import json
+import logging
+from pathlib import Path
+import queue
+import shutil
+import threading
+import time
+import uuid
+
+import actions
+from audio import Audio
+from midi import Transport,RGB,ports
+from store import Store,profile,page,validate_control,number,AUDIO_EXTS,TYPES
+
+VERSION='0.6.0'
+KNOBS={'volumeKnob':('volumeDown','volumeUp'),'scrollKnob':('scrollDown','scrollUp'),'hscrollKnob':('scrollLeft','scrollRight'),'zoomKnob':('zoomOut','zoomIn'),'tabKnob':('previousTab','nextTab'),'windowKnob':('previousWindow','nextWindow'),'desktopKnob':('desktopLeft','desktopRight')}
+
+def signature(port,data):
+    high=data[0]&0xF0;kind={0x80:'note',0x90:'note',0xB0:'cc',0xE0:'pitch',0xD0:'aftertouch',0xC0:'program'}.get(high)
+    return {'kind':kind,'channel':data[0]&15,'data1':data[1] if kind not in ['pitch','aftertouch'] else 0,'port':port}
+
+def matches(mapping,sig,primary):
+    return mapping and all(mapping.get(k)==sig.get(k) for k in ['kind','channel','data1']) and (mapping.get('port')==sig['port'] if mapping.get('port') else sig['port']==primary)
+
+def delta(previous,value,mode):
+    if mode=='relative' or mode=='auto' and value in [1,127,65,63]:
+        if value in [1,65]:return 1
+        if value in [127,63]:return -1
+        return -(128-value) if value>64 else value
+    if previous is None:return 0
+    # Absolute encoders do not wrap from maximum back to minimum.
+    return max(-8,min(8,value-previous))
+
+def foreground_executable():
+    user=C.WinDLL('user32');kernel=C.WinDLL('kernel32')
+    user.GetForegroundWindow.restype=W.HWND
+    kernel.OpenProcess.argtypes=[W.DWORD,W.BOOL,W.DWORD];kernel.OpenProcess.restype=W.HANDLE
+    kernel.QueryFullProcessImageNameW.argtypes=[W.HANDLE,W.DWORD,W.LPWSTR,C.POINTER(W.DWORD)];kernel.CloseHandle.argtypes=[W.HANDLE]
+    user.GetWindowThreadProcessId.argtypes=[W.HWND,C.POINTER(W.DWORD)]
+    process=W.DWORD();user.GetWindowThreadProcessId(user.GetForegroundWindow(),C.byref(process))
+    handle=kernel.OpenProcess(0x1000,False,process.value)
+    if not handle:return ''
+    try:
+        buf=C.create_unicode_buffer(32768);length=W.DWORD(len(buf))
+        return Path(buf.value).name.lower() if kernel.QueryFullProcessImageNameW(handle,0,buf,C.byref(length)) else ''
+    finally:kernel.CloseHandle(handle)
+
+class Controller:
+    def __init__(self,root,transport=None):
+        self.lock=threading.RLock();self.logs=deque(maxlen=300);self.store=Store(root);self.revision=1;self.window=None;self.quitting=False;self.paused=False;self.learning=None;self.previous={};self.primary='';self.connection={'state':'disconnected','message':'Connect your SMC-PAD to begin'};self.rgb_state={'state':'notRead','colors':{},'results':[]};self.last_midi=None;self.available=ports();self.action_queue=queue.Queue(256);self.device_queue=queue.Queue(8);self.cancel_actions=threading.Event();self.stop=threading.Event();self.last_monitor=0;self.calibration={};self._reconnect=None
+        self.performance_auto=False;self.performance_candidates=set();self.rgb_epoch=0;self.device_busy=False
+        self.audio=Audio(self.event);self.transport=transport or Transport(self.on_midi);self.rgb=RGB(self.transport,self.event)
+        self.audio.master=number(self.store.data.get('settings',{}).get('masterVolume'),100,0,100)
+        self.action_thread=threading.Thread(target=self._actions,name='Actions',daemon=True);self.action_thread.start()
+        self.device_thread=threading.Thread(target=self._devices,name='Device operations',daemon=True);self.device_thread.start()
+        self.poll_thread=threading.Thread(target=self._poll,name='Device supervision',daemon=True);self.poll_thread.start()
+        if self.store.recovered:self.event('error',{'message':'Profile data was recovered; the original file was preserved.'})
+
+    def event(self,kind,data):
+        with self.lock:
+            if kind=='rgb':
+                if data.get('state') in ['discovering','unavailable','available']:
+                    self.rgb_state={'colors':{},'results':[]}
+                if 'results' in data:
+                    if (data.get('bank'),data.get('preset'))!=(self.rgb_state.get('bank'),self.rgb_state.get('preset')) and 'bank' in data:
+                        self.rgb_state['colors']={}
+                    for result in data['results']:
+                        if result['ok']:self.rgb_state.setdefault('colors',{})[result['pad']]=result['color']
+                self.rgb_state.update(copy.deepcopy(data))
+            message=data.get('message')
+            if message or kind=='error':
+                item={'time':time.strftime('%H:%M:%S'),'kind':kind,'message':message or str(data)};self.logs.append(item);logging.info('%s %s',kind,item['message'])
+
+    def _changed(self):self.revision+=1
+
+    def on_midi(self,port,data):
+        if not data:
+            self.event('error',{'message':'MIDI device reported an input error'});return
+        if data[0]>=0xF0:return
+        sig=signature(port,data)
+        if not sig['kind']:return
+        with self.lock,self.store.lock:
+            self.last_midi={'port':port,'data':data,'kind':sig['kind'],'channel':sig['channel']+1,'value':data[-1]}
+            if self.performance_auto and port in self.performance_candidates and ((sig['kind']=='note' and sig['channel']==9 and 36<=sig['data1']<=67) or (sig['kind']=='cc' and sig['channel']==0 and 30<=sig['data1']<=37)) and port!=self.primary:
+                self.primary=port;self.connection['input']=port
+                self.event('device',{'message':'Performance input identified from controller activity: '+port})
+            if self.learning:
+                target=self.learning;self.learning=None
+                p=next(p for p in self.store.data['profiles'] if p['id']==target['profile'])
+                pg=next(pg for pg in p['pages'] if pg['id']==target['page'])
+                self.store.checkpoint();pg['banks'][target['bank']][target['id']]['mapping']=sig;self.store.persist();self._changed();self.event('learn',{'message':'MIDI learned for '+target['id']+' from '+port});return
+            current=self.store.current();bank=current['activeBank']
+            if sig['kind']=='note' and sig['channel']==9 and port==self.primary:
+                detected='A' if 36<=sig['data1']<=51 else 'B' if 52<=sig['data1']<=67 else bank
+                if detected!=bank:current['activeBank']=detected;bank=detected;self.previous.clear();self._changed()
+            controls=copy.deepcopy(self.store.controls(bank=bank))
+        for cid,cfg in controls.items():
+            if not matches(cfg['mapping'],sig,self.primary):continue
+            key=(current['id'],current['activePage'],bank,cid);value=data[2] if len(data)>2 else data[1]
+            if cid.startswith('knob'):
+                change=delta(self.previous.get(key),value,cfg['encoderMode']);self.previous[key]=value
+                self.calibration[cid]={'raw':value,'delta':change,'port':port,'mode':cfg['encoderMode']}
+            else:change=None
+            if self.paused:continue
+            self._trigger(cid,cfg,data,change,key)
+
+    def _trigger(self,cid,cfg,data=None,change=None,key=None):
+        if cfg['action']=='none':return
+        if data is not None:
+            high=data[0]&0xF0;press=not(high==0x80 or high in [0x90,0xB0] and (data[2] if len(data)>2 else 0)==0)
+            if cfg['trigger'] in ['press','pressOnly'] and not press and not cid.startswith('knob'):return
+            if cfg['trigger']=='releaseOnly' and press:return
+        req=copy.deepcopy(cfg);req.update(type=cfg['action'],control=cid,amount=1,mode=cfg['audioMode'],volume=cfg['audioVolume'])
+        if cfg['action'].endswith('Knob'):
+            change=1 if change is None else change
+            if not change:return
+            if cfg['invert']:change=-change
+            req['amount']=max(1,min(6,round(abs(change)*cfg['sensitivity']*(2 if cfg['acceleration'] and abs(change)>1 else 1))))
+            if cfg['action'] in KNOBS:req['type']=KNOBS[cfg['action']][change>0]
+            elif cfg['action']=='arrowKnob':req.update(type='shortcut',value='right' if change>0 else 'left')
+            elif cfg['action']=='twoWayShortcutKnob':
+                parts=cfg['value'].split('|');req.update(type='shortcut',value=(parts[min(1,len(parts)-1)] if change>0 else parts[0]).strip())
+        if req['type']=='stopAudio':self.audio.command('stop');return
+        try:self.action_queue.put_nowait((req,self.cancel_actions))
+        except queue.Full:self.event('error',{'message':'Action queue is full. Pause mappings and try again.'})
+
+    def _perform(self,req):
+        if req['type']=='playAudio':return self.audio.command('play',req)
+        if req['type']=='stopAudio':return self.audio.command('stop')
+        if req['type']=='url' and not str(req['value']).lower().startswith(('https://','http://')):raise ValueError('Websites must use http or https')
+        return actions.action(req)
+
+    def _actions(self):
+        while not self.stop.is_set():
+            try:req,cancel=self.action_queue.get(timeout=.2)
+            except queue.Empty:continue
+            if cancel.is_set():continue
+            try:
+                if req['type']=='macro':
+                    for step in req.get('steps',[]):
+                        if cancel.is_set():break
+                        if step['type']=='delay':cancel.wait(step.get('milliseconds',250)/1000)
+                        else:self._perform({**req,**step,'amount':1})
+                else:self._perform(req)
+            except Exception as exc:self.event('error',{'message':'Action failed: '+str(exc)})
+
+    def cancel_macros(self):
+        self.cancel_actions.set();self.cancel_actions=threading.Event()
+
+    def _devices(self):
+        while not self.stop.is_set():
+            try:command,data=self.device_queue.get(timeout=.2)
+            except queue.Empty:continue
+            if command in ['read','apply'] and data.get('epoch')!=self.rgb_epoch:continue
+            self.device_busy=command!='keepalive'
+            try:
+                if command=='connect':
+                    self.available=ports();requested=data.get('performanceInput')
+                    for port_id in list(self.transport.inputs):self.transport.close_input(port_id)
+                    self.transport.close_output();self.rgb.port=None;self.rgb.ready=False;self.primary=''
+                    try:self.rgb.discover(self.available,data.get('rgbInput'),data.get('rgbOutput'))
+                    except Exception as exc:self.event('rgb',{'state':'unavailable','message':str(exc)})
+                    candidates=[p for p in self.available['inputs'] if any(name in p['name'].lower() for name in ['smc','sinco']) and 'private' not in p['name'].lower()]
+                    candidates.sort(key=lambda p:(p['id']==self.rgb.port,'midiin3' in p['name'].lower(),p['name'].startswith('MIDIIN')))
+                    inp=next((p for p in self.available['inputs'] if p['id']==int(requested)),None) if requested is not None else next(iter(candidates),None)
+                    if not inp:raise RuntimeError('No SMC-PAD performance input found. Connect USB and refresh ports.')
+                    self.transport.open_input(inp);self.primary=inp['name'];self.connection={'state':'connected','input':inp['name'],'message':'MIDI is active in the background'};self._reconnect=copy.deepcopy(data)
+                    self.performance_auto=requested is None;self.performance_candidates={inp['name']}
+                    if self.performance_auto:
+                        for candidate in candidates:
+                            if candidate['name'].lower().startswith('midiin3'):continue
+                            try:self.transport.open_input(candidate);self.performance_candidates.add(candidate['name'])
+                            except Exception as exc:self.event('device',{'message':'Additional input unavailable: '+str(exc)})
+                    self.event('device',{'message':'Connected performance input '+inp['name']})
+                elif command=='read':
+                    colors=self.rgb.read_colors(data['preset'],data['bank']);self.rgb_state['colors']=colors
+                elif command=='apply':self.rgb.apply(data['colors'],data['preset'],data['bank'])
+                elif command=='keepalive':self.rgb.keep_alive()
+            except Exception as exc:
+                if command=='connect':self.connection={'state':'error','message':str(exc)}
+                self.event('rgb' if command in ['read','apply','keepalive'] else 'error',{'state':'error','message':str(exc)})
+            finally:self.device_busy=False
+
+    def _poll(self):
+        tick=0
+        while not self.stop.wait(.5):
+            tick+=1
+            try:
+                if tick%4==0:
+                    self.available=ports()
+                    if self.primary and self.primary not in [p['name'] for p in self.available['inputs']]:
+                        self.rgb.cancel.set();self.rgb.ready=False;self.connection={'state':'disconnected','message':'USB disconnected — waiting to reconnect'};self.primary='';self.event('device',{'message':'USB disconnected'})
+                    elif not self.primary and self._reconnect and any('smc' in p['name'].lower() for p in self.available['inputs']) and self.device_queue.empty():self.device_queue.put_nowait(('connect',self._reconnect))
+                    elif self.rgb.ready and self.device_queue.empty():self.device_queue.put_nowait(('keepalive',{}))
+                if self.store.data['settings'].get('autoProfiles') and not self.store.data.get('pinned',True):
+                    app=foreground_executable()
+                    if 'smc-pad' in app:continue
+                    target=next((p for p in self.store.data['profiles'] if app in p.get('apps',[])),None)
+                    if target and target['id']!=self.store.data['activeProfile']:
+                        with self.lock,self.store.lock:self.store.data['activeProfile']=target['id'];self.previous.clear();self._changed()
+                        self.event('profile',{'message':'Profile switched for '+app})
+            except Exception as exc:self.event('error',{'message':'Background check: '+str(exc)})
+
+    def _target(self,data):
+        p=next(p for p in self.store.data['profiles'] if p['id']==data.get('profile',self.store.data['activeProfile']))
+        pg=next(pg for pg in p['pages'] if pg['id']==data.get('page',p['activePage']))
+        bank=data.get('bank',p['activeBank'])
+        if bank not in ['A','B']:raise ValueError('Invalid bank')
+        return pg['banks'][bank]
+
+    def request(self,command,data=None):
+        """Only this explicit command allowlist is exposed to the local UI."""
+        data=data or {}
+        try:return {'ok':True,'value':self._request(command,data)}
+        except Exception as exc:
+            logging.exception('UI command %s failed',command);self.event('error',{'message':str(exc)});return {'ok':False,'error':str(exc)}
+
+    def _request(self,command,data):
+        if command=='snapshot':
+            with self.lock,self.store.lock:
+                result={'version':VERSION,'revision':self.revision,'connection':copy.deepcopy(self.connection),'rgb':copy.deepcopy(self.rgb_state),'ports':copy.deepcopy(self.available),'audio':self.audio.snapshot(),'paused':self.paused,'learning':self.learning,'midi':self.last_midi,'calibration':copy.deepcopy(self.calibration),'logs':list(self.logs)[-70:],'droppedMidi':self.transport.dropped}
+                if data.get('revision')!=self.revision:result['store']=self.store.snapshot()
+                return result
+        if command=='refresh':self.available=ports();return self.available
+        if command=='connect':self.device_queue.put_nowait(('connect',copy.deepcopy(data)));return True
+        if command=='cancelRGB':self.rgb_epoch+=1;self.rgb.cancel.set();return True
+        if command=='disconnect':
+            self.rgb.cancel.set()
+            with self.rgb.lock:
+                for port in list(self.transport.inputs):self.transport.close_input(port)
+                self.transport.close_output();self.rgb.port=None;self.rgb.ready=False;self.primary='';self._reconnect=None;self.connection={'state':'disconnected','message':'Device disconnected'}
+            return True
+        if command in ['readRGB','applyRGB']:
+            if self.rgb.port is None:raise RuntimeError('Connect the device configuration port first')
+            if self.device_busy or not self.device_queue.empty():raise RuntimeError('Wait for the current device operation, or cancel it first')
+            payload={'preset':int(number(data.get('preset'),0,0,7)),'bank':data.get('bank','A'),'epoch':self.rgb_epoch}
+            if command=='applyRGB':
+                payload['colors']={cid:c['color'] for cid,c in self._target(data).items() if cid.startswith('pad') and (data.get('ids') is None or cid in data['ids'])}
+                if not payload['colors']:raise ValueError('Select at least one pad to apply hardware colors')
+            self.device_queue.put_nowait(('read' if command=='readRGB' else 'apply',payload));return True
+        if command=='adoptRGB':
+            with self.lock,self.store.lock:
+                if self.rgb_state.get('bank')!=data.get('bank',self.store.current()['activeBank']):raise ValueError('Read colors from this bank first')
+                target=self._target(data);self.store.checkpoint()
+                for cid,color in self.rgb_state.get('colors',{}).items():target[cid]['color']=color
+                self.store.persist();self._changed();return True
+        if command=='pause':self.paused=bool(data.get('paused',not self.paused));self.cancel_macros();return self.paused
+        if command=='cancelActions':self.cancel_macros();return True
+        if command=='stopAudio':self.audio.command('stop');return True
+        if command=='stopClip':self.audio.command('stop',data);return True
+        if command=='masterVolume':
+            volume=number(data.get('volume'),100,0,100);self.audio.command('master',{'volume':volume})
+            with self.lock,self.store.lock:self.store.data['settings']['masterVolume']=volume;self.store.persist();self._changed()
+            return volume
+        if command=='clipGain':self.audio.command('gain',data);return True
+        if command=='learn':
+            if not self.primary:raise ValueError('Connect MIDI before learning a control')
+            if data['id'] not in self._target(data):raise ValueError('Unknown control')
+            self.learning={'id':data['id'],'profile':data.get('profile',self.store.current()['id']),'page':data.get('page',self.store.current()['activePage']),'bank':data.get('bank',self.store.current()['activeBank'])};return True
+        if command=='cancelLearn':self.learning=None;return True
+        if command in ['saveControl','copyControls','undo','newProfile','duplicateProfile','deleteProfile','switchProfile','updateProfile','newPage','switchPage','renamePage','settings']:
+            with self.lock,self.store.lock:
+                p=self.store.current()
+                if command=='undo':
+                    if self.store.undo:self.store.data=self.store.undo.pop()
+                else:
+                    self.store.checkpoint()
+                    if command=='saveControl':self._target(data)[data['id']]=validate_control(data['id'],data['control'])
+                    elif command=='copyControls':
+                        target=self._target(data);source=copy.deepcopy(target[data['source']])
+                        for cid in data['ids']:target[cid]=validate_control(cid,{**source,'mapping':target[cid]['mapping']})
+                    elif command=='newProfile':
+                        new=profile(str(data.get('name','New profile')));self.store.data['profiles'].append(new);self.store.data['activeProfile']=new['id']
+                    elif command=='duplicateProfile':
+                        new=copy.deepcopy(p);new['id']=uuid.uuid4().hex;new['name']=p['name']+' copy';self.store.data['profiles'].append(new);self.store.data['activeProfile']=new['id']
+                    elif command=='deleteProfile':
+                        if len(self.store.data['profiles'])==1:raise ValueError('Keep at least one profile')
+                        self.store.data['profiles'].remove(p);self.store.data['activeProfile']=self.store.data['profiles'][0]['id']
+                    elif command=='switchProfile':
+                        if data['id'] not in [p['id'] for p in self.store.data['profiles']]:raise ValueError('Unknown profile')
+                        self.store.data['activeProfile']=data['id'];self.store.data['pinned']=bool(data.get('pinned',True))
+                    elif command=='updateProfile':p['name']=str(data.get('name',p['name']))[:80];p['apps']=[a.strip().lower() for a in str(data.get('apps','')).split(',') if a.strip()];self.store.data['pinned']=bool(data.get('pinned',self.store.data['pinned']))
+                    elif command=='newPage':
+                        if len(p['pages'])>=32:raise ValueError('Maximum 32 pages reached')
+                        pg=page(str(data.get('name','Page '+str(len(p['pages'])+1))));p['pages'].append(pg);p['activePage']=pg['id']
+                    elif command=='switchPage':
+                        if data.get('id',p['activePage']) not in [pg['id'] for pg in p['pages']]:raise ValueError('Unknown page')
+                        if data.get('bank',p['activeBank']) not in ['A','B']:raise ValueError('Unknown bank')
+                        p['activePage']=data.get('id',p['activePage']);p['activeBank']=data.get('bank',p['activeBank'])
+                    elif command=='renamePage':next(pg for pg in p['pages'] if pg['id']==p['activePage'])['name']=str(data['name'])[:60]
+                    elif command=='settings':self.store.data['settings'].update({k:bool(v) for k,v in data.items() if k in ['autoProfiles','reducedMotion']})
+                self.store.persist();self.previous.clear();self.learning=None;self._changed();return True
+        if command in ['testAction','macroPreview']:
+            cfg=validate_control(data['id'],data.get('control',self._target(data)[data['id']]))
+            if command=='macroPreview':return [{**step,'description':f"Wait {step.get('milliseconds',250)} ms" if step['type']=='delay' else step['type']+': '+str(step.get('value',''))} for step in cfg['steps']]
+            self._trigger(data['id'],cfg);return True
+        if command=='library':
+            folder=self.store.root/'Audio';folder.mkdir(exist_ok=True)
+            return [{'path':str(p),'name':p.name.split('-',1)[-1] if len(p.name.split('-',1)[0])==32 else p.name,'size':p.stat().st_size,'duration':self.audio.duration.get(str(p))} for p in folder.iterdir() if p.is_file() and p.suffix.lower() in AUDIO_EXTS]
+        if command in ['chooseAudio','importAudio']:
+            paths=data.get('paths')
+            if command=='chooseAudio':paths=self._dialog('audio')
+            if not paths:return []
+            values=[];folder=self.store.root/'Audio';folder.mkdir(exist_ok=True)
+            for value in paths:
+                source=Path(value).resolve(strict=True)
+                if source.suffix.lower() not in AUDIO_EXTS or source.stat().st_size>200_000_000:raise ValueError('Unsupported audio or file exceeds 200 MB')
+                target=folder/(uuid.uuid4().hex+'-'+source.name);shutil.copy2(source,target);values.append({'path':str(target),'name':source.name})
+            return values
+        if command=='previewAudio':
+            cfg=data.get('control',{});path=data.get('path',cfg.get('value',''));self.audio.command('play',{**cfg,'value':path,'control':'preview','mode':'restart'});return True
+        if command=='inspectAudio':return self.audio.command('inspect',{'value':data['path']},wait=True)
+        if command=='browse':
+            paths=self._dialog('file');return paths[0] if paths else ''
+        if command=='importProfile':
+            paths=self._dialog('profile')
+            if paths:self.store.import_profile(paths[0]);self._changed()
+            return bool(paths)
+        if command=='exportProfile':
+            paths=self._dialog('export')
+            if paths:self.store.export_profile(paths[0] if isinstance(paths,(tuple,list)) else paths)
+            return bool(paths)
+        if command=='diagnostics':
+            paths=self._dialog('diagnostics')
+            if not paths:return False
+            path=paths[0] if isinstance(paths,(tuple,list)) else paths
+            report={'version':VERSION,'connection':self.connection,'ports':self.available,'rgb':self.rgb_state,'logs':list(self.logs),'audioError':self.audio.error,'droppedMidi':self.transport.dropped}
+            Path(path).write_text(json.dumps(report,indent=2),encoding='utf8');return True
+        if command=='quit':self.quitting=True;self.window.destroy() if self.window else None;return True
+        raise ValueError('Unknown UI command')
+
+    def _dialog(self,kind):
+        if self.window is None:raise RuntimeError('File dialogs require the desktop window')
+        import webview
+        if kind in ['export','diagnostics']:
+            return self.window.create_file_dialog(webview.FileDialog.SAVE,save_filename='SMC-PAD-profile.zip' if kind=='export' else 'SMC-PAD-diagnostics.json',file_types=('Profile bundle (*.zip)',) if kind=='export' else ('JSON (*.json)',))
+        return self.window.create_file_dialog(webview.FileDialog.OPEN,allow_multiple=kind=='audio',file_types={'audio':('Audio (*.wav;*.mp3;*.m4a;*.aac;*.wma;*.flac)',),'profile':('SMC-PAD profile (*.json;*.zip)',),'file':('All files (*.*)',)}[kind])
+
+    def close(self):
+        self.stop.set();self.cancel_macros();self.rgb.cancel.set()
+        self.device_thread.join(6);self.transport.close();self.audio.close();self.store.persist()
+        self.action_thread.join(1);self.poll_thread.join(1)
