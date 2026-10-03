@@ -156,9 +156,14 @@ class Controller:
     def _devices(self):
         while not self.stop.is_set():
             try:command,data=self.device_queue.get(timeout=.2)
-            except queue.Empty:continue
-            if command in ['read','apply'] and data.get('epoch')!=self.rgb_epoch:continue
-            self.device_busy=command!='keepalive'
+            except queue.Empty:
+                # Keep-alive runs here, between queued operations, so it never
+                # occupies the queue and blocks a user's read/apply request.
+                try:self.rgb.keep_alive()
+                except Exception as exc:self.event('rgb',{'state':'error','message':str(exc)})
+                continue
+            if command in ['read','apply','identify'] and data.get('epoch')!=self.rgb_epoch:continue
+            self.device_busy=True
             try:
                 if command=='connect':
                     self.available=ports();requested=data.get('performanceInput')
@@ -181,10 +186,10 @@ class Controller:
                 elif command=='read':
                     colors=self.rgb.read_colors(data['preset'],data['bank']);self.rgb_state['colors']=colors
                 elif command=='apply':self.rgb.apply(data['colors'],data['preset'],data['bank'])
-                elif command=='keepalive':self.rgb.keep_alive()
+                elif command=='identify':self.rgb.identify(data['preset'],data['bank'])
             except Exception as exc:
                 if command=='connect':self.connection={'state':'error','message':str(exc)}
-                self.event('rgb' if command in ['read','apply','keepalive'] else 'error',{'state':'error','message':str(exc)})
+                self.event('rgb' if command in ['read','apply','identify'] else 'error',{'state':'error','message':str(exc)})
             finally:self.device_busy=False
 
     def _poll(self):
@@ -197,7 +202,6 @@ class Controller:
                     if self.primary and self.primary not in [p['name'] for p in self.available['inputs']]:
                         self.rgb.cancel.set();self.rgb.ready=False;self.connection={'state':'disconnected','message':'USB disconnected — waiting to reconnect'};self.primary='';self.event('device',{'message':'USB disconnected'})
                     elif not self.primary and self._reconnect and any('smc' in p['name'].lower() for p in self.available['inputs']) and self.device_queue.empty():self.device_queue.put_nowait(('connect',self._reconnect))
-                    elif self.rgb.ready and self.device_queue.empty():self.device_queue.put_nowait(('keepalive',{}))
                 if self.store.data['settings'].get('autoProfiles') and not self.store.data.get('pinned',True):
                     app=foreground_executable()
                     if 'smc-pad' in app:continue
@@ -236,14 +240,14 @@ class Controller:
                 for port in list(self.transport.inputs):self.transport.close_input(port)
                 self.transport.close_output();self.rgb.port=None;self.rgb.ready=False;self.primary='';self._reconnect=None;self.connection={'state':'disconnected','message':'Device disconnected'}
             return True
-        if command in ['readRGB','applyRGB']:
+        if command in ['readRGB','applyRGB','identifyRGB']:
             if self.rgb.port is None:raise RuntimeError('Connect the device configuration port first')
             if self.device_busy or not self.device_queue.empty():raise RuntimeError('Wait for the current device operation, or cancel it first')
             payload={'preset':int(number(data.get('preset'),0,0,7)),'bank':data.get('bank','A'),'epoch':self.rgb_epoch}
             if command=='applyRGB':
                 payload['colors']={cid:c['color'] for cid,c in self._target(data).items() if cid.startswith('pad') and (data.get('ids') is None or cid in data['ids'])}
                 if not payload['colors']:raise ValueError('Select at least one pad to apply hardware colors')
-            self.device_queue.put_nowait(('read' if command=='readRGB' else 'apply',payload));return True
+            self.device_queue.put_nowait(({'readRGB':'read','applyRGB':'apply','identifyRGB':'identify'}[command],payload));return True
         if command=='adoptRGB':
             with self.lock,self.store.lock:
                 if self.rgb_state.get('bank')!=data.get('bank',self.store.current()['activeBank']):raise ValueError('Read colors from this bank first')

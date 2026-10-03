@@ -158,7 +158,7 @@ class RGB:
 
     def discover(self,available,input_id=None,output_id=None):
         with self.lock:
-            self.cancel.clear();self.ready=False
+            self.cancel.clear();self.ready=False;self.flash=None
             ins=[p for p in available['inputs'] if any(x in p['name'].lower() for x in ['smc','sinco'])]
             outs=[p for p in available['outputs'] if any(x in p['name'].lower() for x in ['smc','sinco'])]
             if input_id is not None and output_id is not None:
@@ -210,10 +210,13 @@ class RGB:
                 address=self.address(pad,preset,bank);colors['pad'+str(pad)]='#'+self.flash[address:address+3].hex()
             self.event('rgb',{'state':'synced','colors':colors,'preset':preset,'bank':bank});return colors
 
-    def apply(self,colors,preset,bank):
+    def apply(self,colors,preset,bank,refresh=True):
         with self.lock:
             self.cancel.clear()
-            if not self.ready:self.unlock()
+            # The pad ignores writes once its session lapses, even though memory
+            # readback can still match. Replay the full unlock immediately before
+            # writing, exactly as the verified read-then-write sequence does.
+            if refresh or not self.ready:self.unlock()
             # Validate all intended addresses and colors before the first hardware write.
             writes=[]
             for cid,color in colors.items():
@@ -243,7 +246,33 @@ class RGB:
             self.event('rgb',{'state':'synced' if all(r['ok'] for r in results) else 'partial','results':results,'preset':preset,'bank':bank})
             return results
 
+    def identify(self,preset,bank,color='#ffffff',hold=1.5):
+        """Briefly paint all 16 pads of a preset/bank, then restore them, so the
+        user can see which stored preset the hardware is actually displaying."""
+        with self.lock:
+            self.cancel.clear();self.unlock()
+            originals={f'pad{i}':'#'+self.flash[a:a+3].hex() for i in range(1,17) for a in [self.address(i,preset,bank)]}
+            try:
+                self.apply({cid:color for cid in originals},preset,bank,refresh=False)
+                self.cancel.wait(hold)
+            finally:
+                self.cancel.clear();restored=self.apply(originals,preset,bank,refresh=False)
+            if not all(r['ok'] for r in restored):
+                raise RuntimeError('Identify could not restore every pad. Read colors, then Apply to restore them.')
+            self.event('rgb',{'state':'synced','colors':originals,'preset':preset,'bank':bank,'message':f'Identify finished for Preset {int(preset)+1}, Bank {bank}'})
+            return originals
+
     def keep_alive(self):
-        if self.ready and time.monotonic()-self.last_activity>2 and self.lock.acquire(blocking=False):
-            try:self.read_region(5,0,1,1)
-            finally:self.lock.release()
+        # Mirror the official app: poll the 12-byte global block about twice a
+        # second. It changes when the preset/bank is switched on the hardware.
+        if self.port is None or self.header is None or self.flash is None or time.monotonic()-self.last_activity<.4:return
+        if not self.lock.acquire(blocking=False):return
+        try:
+            try:header=self.read_region(4,0,12,1)
+            except Exception as exc:
+                self.header=None;self.ready=False
+                self.event('rgb',{'state':'error','message':'Configuration session lost: '+str(exc)});return
+            if header!=self.header:
+                self.event('rgb',{'state':'stale','message':'Device state changed on the hardware ('+self.header.hex(' ')+' -> '+header.hex(' ')+'). Colors will be re-read before the next write.'})
+                self.header=header;self.ready=False
+        finally:self.lock.release()
