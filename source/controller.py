@@ -15,10 +15,10 @@ import uuid
 
 import actions
 from audio import Audio
-from midi import Transport,RGB,ports
-from store import Store,profile,page,validate_control,number,AUDIO_EXTS,TYPES
+from midi import Transport,RGB,ports,bank_for_note
+from store import Store,profile,page,validate_control,number,preset_locator,AUDIO_EXTS,TYPES,BANKS
 
-VERSION='0.6.0'
+VERSION='0.7.0'
 KNOBS={'volumeKnob':('volumeDown','volumeUp'),'scrollKnob':('scrollDown','scrollUp'),'hscrollKnob':('scrollLeft','scrollRight'),'zoomKnob':('zoomOut','zoomIn'),'tabKnob':('previousTab','nextTab'),'windowKnob':('previousWindow','nextWindow'),'desktopKnob':('desktopLeft','desktopRight')}
 
 def signature(port,data):
@@ -55,6 +55,7 @@ class Controller:
     def __init__(self,root,transport=None):
         self.lock=threading.RLock();self.logs=deque(maxlen=300);self.store=Store(root);self.revision=1;self.window=None;self.quitting=False;self.paused=False;self.learning=None;self.previous={};self.primary='';self.connection={'state':'disconnected','message':'Connect your SMC-PAD to begin'};self.rgb_state={'state':'notRead','colors':{},'results':[]};self.last_midi=None;self.available=ports();self.action_queue=queue.Queue(256);self.device_queue=queue.Queue(8);self.cancel_actions=threading.Event();self.stop=threading.Event();self.last_monitor=0;self.calibration={};self._reconnect=None
         self.performance_auto=False;self.performance_candidates=set();self.rgb_epoch=0;self.device_busy=False
+        self.live_lit={};self.live_retry=0
         self.audio=Audio(self.event);self.transport=transport or Transport(self.on_midi);self.rgb=RGB(self.transport,self.event)
         self.audio.master=number(self.store.data.get('settings',{}).get('masterVolume'),100,0,100)
         self.action_thread=threading.Thread(target=self._actions,name='Actions',daemon=True);self.action_thread.start()
@@ -87,17 +88,17 @@ class Controller:
         if not sig['kind']:return
         with self.lock,self.store.lock:
             self.last_midi={'port':port,'data':data,'kind':sig['kind'],'channel':sig['channel']+1,'value':data[-1]}
-            if self.performance_auto and port in self.performance_candidates and ((sig['kind']=='note' and sig['channel']==9 and 36<=sig['data1']<=67) or (sig['kind']=='cc' and sig['channel']==0 and 30<=sig['data1']<=37)) and port!=self.primary:
+            if self.performance_auto and port in self.performance_candidates and ((sig['kind']=='note' and sig['channel']==9 and bank_for_note(sig['data1'])) or (sig['kind']=='cc' and sig['channel']==0 and 30<=sig['data1']<=37)) and port!=self.primary:
                 self.primary=port;self.connection['input']=port
                 self.event('device',{'message':'Performance input identified from controller activity: '+port})
             if self.learning:
                 target=self.learning;self.learning=None
                 p=next(p for p in self.store.data['profiles'] if p['id']==target['profile'])
                 pg=next(pg for pg in p['pages'] if pg['id']==target['page'])
-                self.store.checkpoint();pg['banks'][target['bank']][target['id']]['mapping']=sig;self.store.persist();self._changed();self.event('learn',{'message':'MIDI learned for '+target['id']+' from '+port});return
+                self.store.checkpoint();Store.bank(pg,target['bank'])[target['id']]['mapping']=sig;self.store.persist();self._changed();self.event('learn',{'message':'MIDI learned for '+target['id']+' from '+port});return
             current=self.store.current();bank=current['activeBank']
             if sig['kind']=='note' and sig['channel']==9 and port==self.primary:
-                detected='A' if 36<=sig['data1']<=51 else 'B' if 52<=sig['data1']<=67 else bank
+                detected=bank_for_note(sig['data1']) or bank
                 if detected!=bank:current['activeBank']=detected;bank=detected;self.previous.clear();self._changed()
             controls=copy.deepcopy(self.store.controls(bank=bank))
         for cid,cfg in controls.items():
@@ -159,10 +160,10 @@ class Controller:
             except queue.Empty:
                 # Keep-alive runs here, between queued operations, so it never
                 # occupies the queue and blocks a user's read/apply request.
-                try:self.rgb.keep_alive()
+                try:self.rgb.keep_alive();self._detect_preset();self._live_feedback()
                 except Exception as exc:self.event('rgb',{'state':'error','message':str(exc)})
                 continue
-            if command in ['read','apply','identify'] and data.get('epoch')!=self.rgb_epoch:continue
+            if command in ['read','apply','identify','save'] and data.get('epoch')!=self.rgb_epoch:continue
             self.device_busy=True
             try:
                 if command=='connect':
@@ -184,13 +185,62 @@ class Controller:
                             except Exception as exc:self.event('device',{'message':'Additional input unavailable: '+str(exc)})
                     self.event('device',{'message':'Connected performance input '+inp['name']})
                 elif command=='read':
-                    colors=self.rgb.read_colors(data['preset'],data['bank']);self.rgb_state['colors']=colors
-                elif command=='apply':self.rgb.apply(data['colors'],data['preset'],data['bank'])
-                elif command=='identify':self.rgb.identify(data['preset'],data['bank'])
+                    self._live_restore();colors=self.rgb.read_colors(data['preset'],data['bank']);self.rgb_state['colors']=colors
+                elif command=='apply':self._live_restore();self.rgb.apply(data['colors'],data['preset'],data['bank'])
+                elif command=='identify':self._live_restore();self.rgb.identify(data['preset'],data['bank'])
+                elif command=='save':self._live_restore();self.rgb.save()
             except Exception as exc:
                 if command=='connect':self.connection={'state':'error','message':str(exc)}
-                self.event('rgb' if command in ['read','apply','identify'] else 'error',{'state':'error','message':str(exc)})
+                self.event('rgb' if command in ['read','apply','identify','save'] else 'error',{'state':'error','message':str(exc)})
             finally:self.device_busy=False
+        try:self._live_restore()
+        except Exception:logging.exception('Live feedback restore failed')
+
+    def _detect_preset(self):
+        """Follow the hardware preset once Identify confirmations located its byte."""
+        header=self.rgb.header;settings=self.store.data['settings']
+        located=preset_locator(settings.get('presetSamples'))
+        if not header or not located:return
+        preset=header[located[0]]-located[1]
+        if 0<=preset<=7 and preset!=settings['hardwarePreset']:
+            with self.lock,self.store.lock:settings['hardwarePreset']=preset;self.store.persist();self._changed()
+            self.event('device',{'message':f'Hardware switched to Preset {preset+1}'})
+
+    def detected_preset(self):
+        located=preset_locator(self.store.data['settings'].get('presetSamples'))
+        if not located or not self.rgb.header:return None
+        preset=self.rgb.header[located[0]]-located[1]
+        return preset if 0<=preset<=7 else None
+
+    def _live_feedback(self):
+        """Light pads while their clips play, then restore the device's own color."""
+        settings=self.store.data['settings'];want=set()
+        if settings.get('liveFeedback') and self.rgb.port is not None and self.rgb.flash is not None and time.monotonic()>=self.live_retry:
+            with self.lock,self.store.lock:bank=self.store.current()['activeBank']
+            playing={str(x['control']) for x in self.audio.snapshot()['players']}
+            want={(settings['hardwarePreset'],bank,cid) for cid in playing if cid.startswith('pad') and cid[3:].isdigit()}
+        elif self.live_lit and time.monotonic()<self.live_retry:return
+        if want==set(self.live_lit):return
+        try:
+            for key in [k for k in self.live_lit if k not in want]:
+                preset,bank,cid=key
+                if self.rgb.apply({cid:self.live_lit[key]},preset,bank,refresh=False,report=False)[0]['ok']:self.live_lit.pop(key)
+                else:raise RuntimeError('Could not restore '+cid)
+            for key in sorted(want-set(self.live_lit)):
+                preset,bank,cid=key
+                if not self.rgb.ready:self.rgb.unlock()
+                address=self.rgb.address(int(cid[3:]),preset,bank);original='#'+self.rgb.flash[address:address+3].hex()
+                result=self.rgb.apply({cid:settings['liveColor']},preset,bank,refresh=False,report=False)[0]
+                if not result['ok']:raise RuntimeError(result['error'])
+                self.live_lit[key]=original
+        except Exception as exc:
+            self.live_retry=time.monotonic()+5;self.event('error',{'message':'Live pad feedback paused for 5 s: '+str(exc)})
+
+    def _live_restore(self):
+        for key,color in list(self.live_lit.items()):
+            preset,bank,cid=key
+            if self.rgb.port is None:break
+            if self.rgb.apply({cid:color},preset,bank,refresh=False,report=False)[0]['ok']:self.live_lit.pop(key)
 
     def _poll(self):
         tick=0
@@ -214,9 +264,7 @@ class Controller:
     def _target(self,data):
         p=next(p for p in self.store.data['profiles'] if p['id']==data.get('profile',self.store.data['activeProfile']))
         pg=next(pg for pg in p['pages'] if pg['id']==data.get('page',p['activePage']))
-        bank=data.get('bank',p['activeBank'])
-        if bank not in ['A','B']:raise ValueError('Invalid bank')
-        return pg['banks'][bank]
+        return Store.bank(pg,data.get('bank',p['activeBank']))
 
     def request(self,command,data=None):
         """Only this explicit command allowlist is exposed to the local UI."""
@@ -228,7 +276,9 @@ class Controller:
     def _request(self,command,data):
         if command=='snapshot':
             with self.lock,self.store.lock:
-                result={'version':VERSION,'revision':self.revision,'connection':copy.deepcopy(self.connection),'rgb':copy.deepcopy(self.rgb_state),'ports':copy.deepcopy(self.available),'audio':self.audio.snapshot(),'paused':self.paused,'learning':self.learning,'midi':self.last_midi,'calibration':copy.deepcopy(self.calibration),'logs':list(self.logs)[-70:],'droppedMidi':self.transport.dropped}
+                located=preset_locator(self.store.data['settings'].get('presetSamples'))
+                rgb={**copy.deepcopy(self.rgb_state),'activePreset':self.detected_preset(),'presetDetection':{'located':located is not None,'presets':len({x['preset'] for x in self.store.data['settings'].get('presetSamples',[])})}}
+                result={'version':VERSION,'revision':self.revision,'connection':copy.deepcopy(self.connection),'rgb':rgb,'ports':copy.deepcopy(self.available),'audio':self.audio.snapshot(),'paused':self.paused,'learning':self.learning,'midi':self.last_midi,'calibration':copy.deepcopy(self.calibration),'logs':list(self.logs)[-70:],'droppedMidi':self.transport.dropped}
                 if data.get('revision')!=self.revision:result['store']=self.store.snapshot()
                 return result
         if command=='refresh':self.available=ports();return self.available
@@ -240,13 +290,28 @@ class Controller:
                 for port in list(self.transport.inputs):self.transport.close_input(port)
                 self.transport.close_output();self.rgb.port=None;self.rgb.ready=False;self.primary='';self._reconnect=None;self.connection={'state':'disconnected','message':'Device disconnected'}
             return True
+        if command=='saveRGB':
+            if self.rgb.port is None:raise RuntimeError('Connect the device configuration port first')
+            if self.device_busy or not self.device_queue.empty():raise RuntimeError('Wait for the current device operation, or cancel it first')
+            self.device_queue.put_nowait(('save',{'epoch':self.rgb_epoch}));return True
+        if command=='confirmPreset':
+            if not self.rgb.header:raise RuntimeError('Connect and read the device first')
+            preset=int(number(data.get('preset'),0,0,7))
+            with self.lock,self.store.lock:
+                settings=self.store.data['settings']
+                samples=[x for x in settings['presetSamples'] if x['preset']!=preset]+[{'header':self.rgb.header.hex(),'preset':preset}]
+                settings['presetSamples']=samples[-8:];settings['hardwarePreset']=preset
+                self.rgb_state.pop('identified',None);self.store.persist();self._changed()
+            return {'detecting':preset_locator(settings['presetSamples']) is not None,'presets':len({x['preset'] for x in settings['presetSamples']})}
         if command in ['readRGB','applyRGB','identifyRGB']:
             if self.rgb.port is None:raise RuntimeError('Connect the device configuration port first')
             if self.device_busy or not self.device_queue.empty():raise RuntimeError('Wait for the current device operation, or cancel it first')
             payload={'preset':int(number(data.get('preset'),0,0,7)),'bank':data.get('bank','A'),'epoch':self.rgb_epoch}
+            if payload['bank'] not in BANKS:raise ValueError('Invalid bank')
             if command=='applyRGB':
                 payload['colors']={cid:c['color'] for cid,c in self._target(data).items() if cid.startswith('pad') and (data.get('ids') is None or cid in data['ids'])}
                 if not payload['colors']:raise ValueError('Select at least one pad to apply hardware colors')
+            self.rgb_state.pop('identified',None)
             self.device_queue.put_nowait(({'readRGB':'read','applyRGB':'apply','identifyRGB':'identify'}[command],payload));return True
         if command=='adoptRGB':
             with self.lock,self.store.lock:
@@ -295,10 +360,15 @@ class Controller:
                         pg=page(str(data.get('name','Page '+str(len(p['pages'])+1))));p['pages'].append(pg);p['activePage']=pg['id']
                     elif command=='switchPage':
                         if data.get('id',p['activePage']) not in [pg['id'] for pg in p['pages']]:raise ValueError('Unknown page')
-                        if data.get('bank',p['activeBank']) not in ['A','B']:raise ValueError('Unknown bank')
+                        if data.get('bank',p['activeBank']) not in BANKS:raise ValueError('Unknown bank')
                         p['activePage']=data.get('id',p['activePage']);p['activeBank']=data.get('bank',p['activeBank'])
                     elif command=='renamePage':next(pg for pg in p['pages'] if pg['id']==p['activePage'])['name']=str(data['name'])[:60]
-                    elif command=='settings':self.store.data['settings'].update({k:bool(v) for k,v in data.items() if k in ['autoProfiles','reducedMotion']})
+                    elif command=='settings':
+                        settings=self.store.data['settings'];settings.update({k:bool(v) for k,v in data.items() if k in ['autoProfiles','reducedMotion','liveFeedback']})
+                        if 'hardwarePreset' in data:settings['hardwarePreset']=int(number(data['hardwarePreset'],0,0,7))
+                        if 'liveColor' in data:
+                            if not __import__('re').fullmatch(r'#[0-9a-fA-F]{6}',str(data['liveColor'])):raise ValueError('Invalid live color')
+                            settings['liveColor']=str(data['liveColor'])
                 self.store.persist();self.previous.clear();self.learning=None;self._changed();return True
         if command in ['testAction','macroPreview']:
             cfg=validate_control(data['id'],data.get('control',self._target(data)[data['id']]))

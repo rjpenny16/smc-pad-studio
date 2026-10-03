@@ -11,19 +11,21 @@ from unittest.mock import patch
 import wave
 import zipfile
 
-from store import Store,validate_control,validate_profile
-from midi import RGB,encode,decode
+from store import Store,validate_control,validate_profile,preset_locator
+from midi import RGB,encode,decode,bank_for_note
 from controller import Controller,matches,signature,delta
 from audio import Audio
 import actions
 
 class FakeTransport:
     def __init__(self):
-        self.inputs={};self.responses=queue.Queue();self.dropped=0;self.memory=bytearray(28312);self.sent=[];self.reject=False;self.bad_readback=False;self.junk=False;self.header=bytearray(12)
-        for i in range(32):
-            start=0x414+i*26;self.memory[start:start+8]=bytes([9,36+i,0,127,30,60,90,255])
-        for i in range(16):
-            start=0xc34+i*26;self.memory[start:start+8]=bytes([9,52+i,0,127,40,70,100,255])
+        self.inputs={};self.responses=queue.Queue();self.dropped=0;self.memory=bytearray(28312);self.sent=[];self.reject=False;self.bad_readback=False;self.junk=False;self.header=bytearray(12);self.saves=0
+        # Preset 1 mirrors a real MidiSuite export: 128 pad records from offset 211,
+        # groups of 16 notes from 4 upward, with the last group repeating notes 52-67.
+        for i in range(128):
+            note=52+i%16 if i>=112 else 4+i
+            rgb=(30,60,90) if 32<=i<64 else (40,70,100) if i>=112 else (150,200,240)
+            start=211+i*26;self.memory[start+1:start+9]=bytes([9,note,0,127,*rgb,255])
     def send(self,message):
         cmd,data=decode(message);self.sent.append((cmd,data))
         if cmd==0x23:
@@ -34,8 +36,9 @@ class FakeTransport:
                 self.responses.put((0,encode(cmd,bytes([0])*len(payload))))
             self.responses.put((0,encode(cmd,payload)))
         elif cmd==0x22:
-            if not self.reject and not self.bad_readback:
-                address=int.from_bytes(data[1:5],'little');self.memory[address:address+3]=data[8:]
+            address=int.from_bytes(data[1:5],'little');length=int.from_bytes(data[5:8],'little')
+            if not length:self.saves+=1
+            elif not self.reject and not self.bad_readback:self.memory[address:address+length]=data[8:8+length]
             self.responses.put((0,encode(0,bytes([1 if self.reject else 0]))))
         else:self.responses.put((0,encode(cmd)))
     def close(self):pass
@@ -53,10 +56,34 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(rgb.address(1,0,'A'),0x418)
         self.assertEqual(rgb.address(1,0,'B'),0x5b8)
         self.assertEqual(rgb.address(16,0,'B'),0x73e)
-        transport.memory[0x414+2*26+1]=99
+        self.assertEqual(rgb.address(1,0,'G'),211+5);self.assertEqual(rgb.address(1,0,'F'),0xc38)
+        # A remapped note or channel no longer blocks color writes.
+        transport.memory[211+34*26+2]=99;self.assertEqual(rgb.address(3,0,'A'),211+34*26+5)
+        # A damaged record blocks only that pad.
+        transport.memory[211+34*26+8]=0
+        with self.assertRaises(RuntimeError):rgb.address(3,0,'A')
+        self.assertEqual(rgb.address(1,0,'A'),0x418)
+        # An unrecognized pad table blocks the whole preset before any write.
+        for i in range(128):transport.memory[211+i*26+8]=0
         with self.assertRaises(RuntimeError):rgb.address(1,0,'A')
+        with self.assertRaises(RuntimeError):rgb.address(1,1,'A')
+        with self.assertRaises(ValueError):rgb.address(1,0,'Z')
         with self.assertRaises(RuntimeError):rgb.apply({'pad1':'#abcdef'},0,'A')
         self.assertEqual([cmd for cmd,data in transport.sent if cmd==0x22],[])
+
+    def test_banks_and_preset_detection(self):
+        self.assertEqual([bank_for_note(n) for n in [36,51,52,67,68,115,116,4,20,3,128]],['A','A','B','B','C','E','F','G','H',None,None])
+        header=lambda value:(bytes(6)+bytes([value])+bytes(5)).hex()
+        self.assertIsNone(preset_locator([{'header':header(2),'preset':0}]))
+        self.assertEqual(preset_locator([{'header':header(2),'preset':0},{'header':header(5),'preset':3}]),(6,2))
+        ambiguous=[{'header':(bytes([p,p])+bytes(10)).hex(),'preset':p} for p in [0,1]]
+        self.assertIsNone(preset_locator(ambiguous))
+        self.assertIsNone(preset_locator([{'header':'zz','preset':0},{'header':header(1),'preset':9}]))
+        with tempfile.TemporaryDirectory() as folder:
+            store=Store(folder);self.assertEqual(set(store.current()['pages'][0]['banks']),{'A','B'})
+            store.current()['activeBank']='D';self.assertEqual(store.snapshot()['profiles'][0]['pages'][0]['banks']['D']['pad1']['action'],'none')
+            store.controls()['pad1']=validate_control('pad1',{'action':'typeText','value':'bank D'});store.persist()
+            reloaded=Store(folder);self.assertEqual(reloaded.controls()['pad1']['value'],'bank D');self.assertNotIn('E',reloaded.current()['pages'][0]['banks'])
 
     def test_rgb_reply_port_address_ack_and_readback(self):
         transport=FakeTransport();rgb=RGB(transport,lambda *a:None);rgb.port=0;rgb.flash=bytearray(transport.memory);rgb.ready=True;transport.junk=True
@@ -82,6 +109,30 @@ class RegressionTests(unittest.TestCase):
         rgb.last_activity=0;rgb.keep_alive();self.assertTrue(rgb.ready)
         transport.header[6]=3;rgb.last_activity=0;rgb.keep_alive()
         self.assertFalse(rgb.ready);self.assertEqual(events[-1]['state'],'stale')
+
+    def test_controller_preset_confirmation_live_feedback_and_save(self):
+        with tempfile.TemporaryDirectory() as folder:
+            transport=FakeTransport();controller=Controller(folder,transport)
+            try:
+                controller.rgb.port=0;controller.rgb.unlock();settings=controller.store.data['settings']
+                transport.header[6]=1;controller.rgb.header=bytes(transport.header)
+                self.assertFalse(controller.request('confirmPreset',{'preset':0})['value']['detecting'])
+                transport.header[6]=3;controller.rgb.header=bytes(transport.header)
+                self.assertTrue(controller.request('confirmPreset',{'preset':2})['value']['detecting'])
+                transport.header[6]=2;controller.rgb.header=bytes(transport.header);controller._detect_preset()
+                self.assertEqual(settings['hardwarePreset'],1);self.assertEqual(controller.detected_preset(),1)
+                transport.header[6]=1;controller.rgb.header=bytes(transport.header);controller._detect_preset();self.assertEqual(settings['hardwarePreset'],0)
+                # Live feedback lights a playing pad on the active bank, then restores it.
+                settings.update(liveFeedback=True,liveColor='#ff0000');players=[{'control':'pad2'}]
+                controller.audio.snapshot=lambda:{'players':players}
+                address=0x418+26;original=bytes(transport.memory[address:address+3])
+                controller._live_feedback();self.assertEqual(bytes(transport.memory[address:address+3]),b'\xff\0\0')
+                players.clear();controller._live_feedback();self.assertEqual(bytes(transport.memory[address:address+3]),original)
+                self.assertEqual(controller.live_lit,{})
+                players.append({'control':'pad2'});controller._live_feedback();controller._live_restore()
+                self.assertEqual(bytes(transport.memory[address:address+3]),original)
+                controller.rgb.save();self.assertEqual(transport.saves,1)
+            finally:controller.close()
 
     def test_store_migration_recovery_banks_and_bundled_macro_audio(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -128,7 +179,9 @@ class RegressionTests(unittest.TestCase):
                 controller.on_midi('Controller A',[0x99,52,100]);self.assertEqual(controller.store.current()['activeBank'],'B')
                 controller.request('newPage',{'name':'Second'});self.assertEqual(len(controller.store.current()['pages']),2)
                 controller.request('undo');self.assertEqual(len(controller.store.current()['pages']),1)
-                self.assertFalse(controller.request('switchPage',{'bank':'C'})['ok']);self.assertEqual(controller.store.current()['activeBank'],'B')
+                self.assertFalse(controller.request('switchPage',{'bank':'Z'})['ok']);self.assertEqual(controller.store.current()['activeBank'],'B')
+                self.assertTrue(controller.request('switchPage',{'bank':'C'})['ok']);self.assertIn('C',controller.request('snapshot',{})['value']['store']['profiles'][0]['pages'][0]['banks'])
+                controller.on_midi('Controller A',[0x99,4,100]);self.assertEqual(controller.store.current()['activeBank'],'G')
             finally:controller.close()
 
     def test_native_audio_zero_trim_loop_modes_gain_stop(self):

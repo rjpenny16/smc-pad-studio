@@ -130,6 +130,21 @@ def decode(message):
     if len(raw)!=length+7 or raw[-1]!=(~sum(data))&255:raise ValueError('Reply length or checksum is invalid')
     return raw[2],data
 
+# Device memory layout, from the decompiled MidiSuite structures: eight presets
+# of 3539 bytes, each holding 128 pad records of 26 bytes from offset 211. A
+# record is `?? ch note min max R G B FF ...`, so RGB starts 5 bytes in.
+PRESET_SIZE=3539;PAD_TABLE=211;PAD_RECORD=26;PAD_RGB=5
+# The hardware pad bank button moves the pads through 16-record groups. Banks A
+# and B keep their original meaning (notes 36-51 and 52-67); C-F follow upward
+# and G-H are the two groups below A.
+BANKS='ABCDEFGH'
+BANK_GROUP={'A':2,'B':3,'C':4,'D':5,'E':6,'F':7,'G':0,'H':1}
+
+def bank_for_note(note):
+    """The bank whose default note range contains this pad note, if any."""
+    group=(int(note)-4)//16
+    return next((b for b,g in BANK_GROUP.items() if g==group),None) if 4<=int(note)<=127 else None
+
 class RGB:
     def __init__(self,transport,event):
         self.transport=transport;self.event=event;self.lock=threading.RLock();self.port=None;self.flash=None;self.header=None;self.ready=False;self.cancel=threading.Event();self.last_activity=0
@@ -193,15 +208,16 @@ class RGB:
     def address(self,pad,preset,bank):
         if not self.ready or self.flash is None:raise RuntimeError('Read device colors first')
         preset=int(preset);pad=int(pad)
-        if not 0<=preset<=7 or not 1<=pad<=16 or bank not in ['A','B']:raise ValueError('Invalid pad, preset or bank')
-        start=preset*3539;end=min(start+3539,len(self.flash))
-        # Firmware also contains duplicate Bank B records later in each preset.
-        # Identify the complete contiguous A/B slab, never an isolated note match.
-        matches=[offset for offset in range(start,end-31*26-7)
-                 if all(self.flash[offset+i*26:offset+i*26+4]==bytes([9,36+i,0,127])
-                        and self.flash[offset+i*26+7]==255 for i in range(32))]
-        if len(matches)!=1:raise RuntimeError(f'Pad {pad} has no unique verified color layout. Its MIDI settings may differ from the expected layout; writes are disabled.')
-        return matches[0]+((0 if bank=='A' else 16)+pad-1)*26+4
+        if not 0<=preset<=7 or not 1<=pad<=16 or bank not in BANK_GROUP:raise ValueError('Invalid pad, preset or bank')
+        table=preset*PRESET_SIZE+PAD_TABLE
+        # Each pad's slot is fixed by the firmware structure, so a pad whose MIDI
+        # note or channel was remapped can still be colored. Writes stay blocked
+        # when the table does not look like pad records at all (unknown firmware).
+        terminators=sum(self.flash[table+i*PAD_RECORD+8]==255 for i in range(128))
+        if terminators<112:raise RuntimeError(f'Preset {preset+1} has an unrecognized pad layout; color writes are disabled.')
+        record=table+(BANK_GROUP[bank]*16+pad-1)*PAD_RECORD
+        if self.flash[record+8]!=255:raise RuntimeError(f'Pad {pad} in Bank {bank} has an unrecognized record; its color writes are disabled.')
+        return record+PAD_RGB
 
     def read_colors(self,preset,bank):
         with self.lock:
@@ -210,7 +226,7 @@ class RGB:
                 address=self.address(pad,preset,bank);colors['pad'+str(pad)]='#'+self.flash[address:address+3].hex()
             self.event('rgb',{'state':'synced','colors':colors,'preset':preset,'bank':bank});return colors
 
-    def apply(self,colors,preset,bank,refresh=True):
+    def apply(self,colors,preset,bank,refresh=True,report=True):
         with self.lock:
             self.cancel.clear()
             # The pad ignores writes once its session lapses, even though memory
@@ -239,12 +255,23 @@ class RGB:
                     results.append({'pad':cid,'ok':False,'error':str(exc)})
                     # A timed-out session must be re-established before another write.
                     if isinstance(exc,TimeoutError):break
-                self.event('rgb',{'state':'writing','results':list(results),'progress':round(len(results)*100/len(writes))})
+                if report:self.event('rgb',{'state':'writing','results':list(results),'progress':round(len(results)*100/len(writes))})
             completed={r['pad'] for r in results}
             for cid,address,rgb in writes:
                 if cid not in completed:results.append({'pad':cid,'ok':False,'error':'Cancelled or session interrupted'})
-            self.event('rgb',{'state':'synced' if all(r['ok'] for r in results) else 'partial','results':results,'preset':preset,'bank':bank})
+            if report:self.event('rgb',{'state':'synced' if all(r['ok'] for r in results) else 'partial','results':results,'preset':preset,'bank':bank})
             return results
+
+    def save(self):
+        """Ask the device to persist its configuration, as MidiSuite's Save does
+        (a zero-length region-5 write). Color writes alone may not survive a
+        power cycle."""
+        with self.lock:
+            self.cancel.clear()
+            if not self.ready:self.unlock()
+            reply,ack=self.request(0x22,b'\x05'+bytes(7),predicate=lambda cmd,data:cmd==0 and len(data)>=1)
+            if ack[0]!=0:raise RuntimeError('Device rejected the save (status '+str(ack[0])+')')
+            self.event('rgb',{'state':'saved','message':'Colors saved to device memory'})
 
     def identify(self,preset,bank,color='#ffffff',hold=1.5):
         """Briefly paint all 16 pads of a preset/bank, then restore them, so the
@@ -259,7 +286,7 @@ class RGB:
                 self.cancel.clear();restored=self.apply(originals,preset,bank,refresh=False)
             if not all(r['ok'] for r in restored):
                 raise RuntimeError('Identify could not restore every pad. Read colors, then Apply to restore them.')
-            self.event('rgb',{'state':'synced','colors':originals,'preset':preset,'bank':bank,'message':f'Identify finished for Preset {int(preset)+1}, Bank {bank}'})
+            self.event('rgb',{'state':'synced','colors':originals,'preset':preset,'bank':bank,'identified':{'preset':int(preset),'bank':bank},'message':f'Identify finished for Preset {int(preset)+1}, Bank {bank}'})
             return originals
 
     def keep_alive(self):
