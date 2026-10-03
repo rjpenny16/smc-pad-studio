@@ -31,7 +31,7 @@ def main():
     try:
         ROOT.mkdir(parents=True,exist_ok=True)
         logging.basicConfig(level=logging.INFO,handlers=[RotatingFileHandler(ROOT/'startup.log',maxBytes=2_000_000,backupCount=3,encoding='utf8')],format='%(asctime)s %(levelname)s %(message)s',force=True)
-        logging.info('Starting SMC-PAD Studio 0.6.0 pid=%s',os.getpid())
+        logging.info('Starting SMC-PAD Studio 0.7.0 pid=%s',os.getpid())
         instance_suffix='.test.'+str(os.getpid()) if '--ui-check' in sys.argv else ''
         mutex=kernel.CreateMutexW(None,False,'Local\\SMCPADStudio'+instance_suffix)
         if not mutex:raise C.WinError(C.get_last_error())

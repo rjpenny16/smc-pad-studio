@@ -1,6 +1,6 @@
-# SMC-PAD Studio 0.6.0
+# SMC-PAD Studio 0.7.0
 
-Run `SMC-PAD-Studio-v0.6.0.exe`. No Python installation is needed. This is a dedicated Windows desktop window with a native MIDI/audio runtime and a tray menu. It loads its bundled interface directly; there is no localhost page or HTTP server to start.
+Download `SMC-PAD-Studio-v0.7.0.exe` from this repository's **Releases** page and run it. Each release also carries `SHA256.txt` for checking the download. No Python installation is needed. This is a dedicated Windows desktop window with a native MIDI/audio runtime and a tray menu. It loads its bundled interface directly; there is no localhost page or HTTP server to start.
 
 ## First session
 
@@ -8,15 +8,26 @@ Run `SMC-PAD-Studio-v0.6.0.exe`. No Python installation is needed. This is a ded
 2. Plug the SMC-PAD in by USB and choose **Connect device**. The Device page also offers manual performance/configuration port selection.
 3. Select a pad or encoder, choose an action, then **Learn physical control** and press or turn it. Save the control. **Test** executes its action immediately.
 4. For audio, choose **Audio clip**, browse or drop a supported file, and set gain, trim, playback mode, loop and fades. The Soundboard view holds imported clips and the live mixer.
-5. For hardware lighting, select the correct hardware preset and A/B bank, then **Read colors**. **Use device palette** copies those colors into the local profile. Change local colors and choose **Apply palette** to write them. Saving mappings alone never writes hardware colors.
+5. For hardware lighting, see **Pad colors** below.
+
+## Pad colors
+
+The SMC-PAD stores eight presets, and only the one it is currently using lights the pads. A write to any other preset succeeds without any visible change, so the first step is to tell Studio which preset is active.
+
+1. On the Device page choose **Read colors**, then **Identify preset**. All 16 pads of the selected preset and bank flash white and are then restored, but you only see it when that preset is the one on the hardware. Change the preset selector and try again until they flash, then choose **Pads flashed**.
+2. Switch presets on the hardware, Identify again and confirm a second preset. From then on Studio follows the hardware preset by itself. Each confirmation is stored, so this is a one-time step.
+3. Pick colors in the editor (or **Use device palette** to start from the device's own) and choose **Apply palette**. Saving mappings alone never writes hardware colors.
+4. Choose **Save to device** to keep the colors after the controller is unplugged. Without it, the device may return to its previously saved colors at power-up.
+
+Settings → **Light pads while their audio clips play** paints a pad in the playing color while its clip plays and restores it afterwards. These temporary colors are never saved to the device.
 
 Windows can expose the configuration endpoint as `SMC-PAD`, `MIDIIN2/3 (SMC-PAD)` or `MIDIOUT2/3 (SMC-PAD)` instead of a name containing “Private.” Discovery verifies replies instead of requiring that exact label. Performance input discovery also follows actual pad/encoder activity; manual selection takes precedence.
 
-Hardware writes are serialized, touch only the three RGB bytes for each pad, check device acknowledgements and read every color back. A failed or cancelled batch reports individual pad results. An unrecognized configuration layout blocks writes. Edited hardware MIDI layouts may therefore need the expected layout restored before RGB editing works. Select the preset currently used on the device; Studio does not switch its hardware preset.
+Hardware writes are serialized, re-establish the device session first, touch only the three RGB bytes for each pad, check device acknowledgements and read every color back. A failed or cancelled batch reports individual pad results. Each pad's color slot is fixed by the firmware's memory layout, so pads with remapped MIDI notes can still be colored; a preset or pad whose records are unrecognized stays write-protected. Studio never switches the hardware preset itself.
 
 ## Everyday controls
 
-- Profiles have application pages and separate A/B banks. Hardware bank activity follows the bank on screen. Different pages provide different action sets without rewriting hardware MIDI settings.
+- Profiles have application pages and eight pad banks, A to H, matching the hardware pad bank button. With the factory note layout, A is notes 36–51, B 52–67, C–F continue upward and G–H are notes 4–35 (hover a bank button for its range). Pressing a pad switches the screen to that pad's bank. Banks C–H are added to a profile the first time they are used. Different pages provide different action sets without rewriting hardware MIDI settings.
 - App rules accept executable names separated by commas, such as `chrome.exe, msedge.exe`. Enable automatic profiles in Settings and unpin the active profile to allow switching.
 - Macros support ordered actions, waits, duplication, reordering, a dry-run preview and cancellation. Dry-run executes nothing. Pause stops queued mappings/macros; Stop Audio is separate.
 - Encoder controls offer absolute/relative/auto interpretation, sensitivity, inversion, acceleration and a live input preview. Choose Absolute for the stock absolute SMC-PAD encoders if auto interpretation is unsuitable.

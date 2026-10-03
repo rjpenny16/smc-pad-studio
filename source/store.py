@@ -13,6 +13,9 @@ COLORS = ['#79b8ff','#a78bfa','#f472b6','#fb7185','#f59e0b','#facc15','#84cc16',
 IDS = [f'pad{i}' for i in range(1,17)] + [f'knob{i}' for i in range(1,9)] + [f'side{i}' for i in range(1,11)]
 TYPES = {'none','playAudio','stopAudio','launch','url','shortcut','typeText','lockPC','macro','volumeKnob','scrollKnob','hscrollKnob','zoomKnob','tabKnob','windowKnob','desktopKnob','arrowKnob','twoWayShortcutKnob','scrollUp','scrollDown','scrollLeft','scrollRight','volumeUp','volumeDown','volumeMute','mediaPlayPause','mediaNext','mediaPrevious','mediaStop','browserBack','browserForward','showDesktop','taskView','snapLeft','snapRight','maximize','minimize','closeWindow','screenshot','refresh','zoomIn','zoomOut','nextTab','previousTab','nextWindow','previousWindow','desktopRight','desktopLeft'}
 AUDIO_EXTS = {'.wav','.mp3','.m4a','.aac','.wma','.flac'}
+# Hardware pad banks (see midi.BANK_GROUP). A and B always exist; the others are
+# created the first time they are used so existing profiles stay small.
+BANKS = 'ABCDEFGH'
 
 def number(value, default, low, high):
     try: result = float(value)
@@ -47,8 +50,43 @@ def validate_control(cid, value):
         step['value']=str(step.get('value',''))[:12000]
     return result
 
+def blank_bank():
+    return {cid:blank_control(cid) for cid in IDS}
+
 def page(name='Page 1'):
-    return {'id':uuid.uuid4().hex,'name':name,'banks':{bank:{cid:blank_control(cid) for cid in IDS} for bank in ['A','B']}}
+    return {'id':uuid.uuid4().hex,'name':name,'banks':{bank:blank_bank() for bank in 'AB'}}
+
+def preset_samples(value):
+    """Sanitized (global header, confirmed preset) pairs from Identify."""
+    result=[]
+    for item in value if isinstance(value,list) else []:
+        try:
+            header=bytes.fromhex(str(item['header']));preset=int(item['preset'])
+            if len(header)==12 and 0<=preset<=7:result.append({'header':header.hex(),'preset':preset})
+        except (KeyError,TypeError,ValueError):continue
+    return result[-8:]
+
+def preset_locator(samples):
+    """Find the global-header byte that tracks the active preset.
+
+    Returns (index, offset) such that header[index]-offset is the preset, once
+    samples from at least two different presets leave exactly one candidate."""
+    samples=preset_samples(samples)
+    if len({s['preset'] for s in samples})<2:return None
+    headers=[(bytes.fromhex(s['header']),s['preset']) for s in samples]
+    candidates=[(i,headers[0][0][i]-headers[0][1]) for i in range(12)
+                if len({h[i]-preset for h,preset in headers})==1]
+    return candidates[0] if len(candidates)==1 else None
+
+def settings(value):
+    value=dict(value) if isinstance(value,dict) else {}
+    value['masterVolume']=number(value.get('masterVolume'),100,0,100)
+    for key in ['autoProfiles','reducedMotion','liveFeedback']:value[key]=bool(value.get(key,False))
+    value['hardwarePreset']=int(number(value.get('hardwarePreset'),0,0,7))
+    import re
+    if not re.fullmatch(r'#[0-9a-fA-F]{6}',str(value.get('liveColor',''))):value['liveColor']='#ffffff'
+    value['presetSamples']=preset_samples(value.get('presetSamples'))
+    return value
 
 def profile(name='My SMC-PAD'):
     p=page();return {'id':uuid.uuid4().hex,'name':name,'apps':[],'pages':[p],'activePage':p['id'],'activeBank':'A'}
@@ -68,11 +106,10 @@ def validate_profile(data):
         pg['id']=str(pg.get('id') or uuid.uuid4().hex)
         if pg['id'] in ids: raise ValueError('Duplicate page identifier')
         ids.add(pg['id']);pg['name']=str(pg.get('name','Page'))[:60]
-        for bank in ['A','B']:
-            values=pg.setdefault('banks',{}).setdefault(bank,{})
-            pg['banks'][bank]={cid:validate_control(cid,values.get(cid,{})) for cid in IDS}
+        banks=pg.get('banks') if isinstance(pg.get('banks'),dict) else {}
+        pg['banks']={bank:{cid:validate_control(cid,banks.get(bank,{}).get(cid,{})) for cid in IDS} for bank in BANKS if bank in 'AB' or bank in banks}
     if p.get('activePage') not in ids: p['activePage']=p['pages'][0]['id']
-    p['activeBank']=p.get('activeBank','A') if p.get('activeBank') in ['A','B'] else 'A'
+    p['activeBank']=p.get('activeBank','A') if p.get('activeBank') in list(BANKS) else 'A'
     p['apps']=[str(a).lower()[:200] for a in p.get('apps',[])][:20]
     return p
 
@@ -80,7 +117,7 @@ class Store:
     def __init__(self,root):
         self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True)
         self.path=self.root/'studio.json';self.lock=threading.RLock();self.undo=[];self.recovered=False
-        p=profile();self.data={'schemaVersion':1,'profiles':[p],'activeProfile':p['id'],'pinned':True,'settings':{'masterVolume':100,'reducedMotion':False,'autoProfiles':False}}
+        p=profile();self.data={'schemaVersion':1,'profiles':[p],'activeProfile':p['id'],'pinned':True,'settings':settings({})}
         for candidate in [self.path,self.path.with_suffix('.json.bak')]:
             if candidate.exists():
                 try:
@@ -89,9 +126,7 @@ class Store:
                     data['profiles']=[validate_profile(x) for x in data['profiles']]
                     if not data['profiles']: raise ValueError('No profiles')
                     if data['activeProfile'] not in [p['id'] for p in data['profiles']]: data['activeProfile']=data['profiles'][0]['id']
-                    settings=data.setdefault('settings',{})
-                    settings['masterVolume']=number(settings.get('masterVolume'),100,0,100)
-                    for key in ['autoProfiles','reducedMotion']:settings[key]=bool(settings.get(key,False))
+                    data['settings']=settings(data.get('settings'))
                     data['pinned']=bool(data.get('pinned',True))
                     self.data=data;self.recovered=candidate!=self.path;break
                 except (ValueError,KeyError,TypeError): self.recovered=True
@@ -115,10 +150,19 @@ class Store:
 
     def controls(self,page_id=None,bank=None):
         p=self.current();pg=next(pg for pg in p['pages'] if pg['id']==(page_id or p['activePage']))
-        return pg['banks'][bank or p['activeBank']]
+        return self.bank(pg,bank or p['activeBank'])
+
+    @staticmethod
+    def bank(pg,bank):
+        if bank not in BANKS:raise ValueError('Invalid bank')
+        return pg['banks'].setdefault(bank,blank_bank())
 
     def snapshot(self):
-        with self.lock: return copy.deepcopy(self.data)
+        with self.lock:
+            # The interface reads the active bank of the active page directly.
+            for p in self.data['profiles']:
+                self.bank(next(pg for pg in p['pages'] if pg['id']==p['activePage']),p['activeBank'])
+            return copy.deepcopy(self.data)
 
     def import_profile(self,path):
         path=Path(path)
