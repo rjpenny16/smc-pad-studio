@@ -4,7 +4,7 @@ The production entry point is `main.py`. `controller.py` exposes a single allowl
 
 Use Windows x64 Python 3.14 (the release was built with 3.14.4). Run `build.ps1` to install pinned direct dependencies and build the EXE. The icon is already included; Pillow is not a runtime or build dependency.
 
-Run safe regression tests with `python test_studio.py`. They execute no desktop shortcuts and perform no hardware writes. Native audio tests use generated silence. Fake transport tests check corrupt replies, port/address filtering, duplicate Bank B records, acknowledgement rejection and color readback failures.
+Run safe regression tests with `python test_studio.py`. The `Windows` GitHub Actions workflow runs them on every push and pull request, builds the EXE, and publishes it with `SHA256.txt` to a GitHub Release when a `v*` tag is pushed (for example `git tag v0.7.0 && git push origin v0.7.0`). EXE files are not committed to the repository. They execute no desktop shortcuts and perform no hardware writes. Native audio tests use generated silence. Fake transport tests check corrupt replies, port/address filtering, duplicate Bank B records, acknowledgement rejection and color readback failures.
 
 Run `python main.py --ui-check --no-dialog` for a real native WebView2/bridge check; it automatically uses a separate verification directory unless `SMC_STUDIO_DATA` is explicitly supplied. The same flags work on the packaged EXE. The test checks profile/page/bank state, zero volume, captured audio import targets, macro preview, physical pad orientation, view navigation, responsive widths and live workers while the window is hidden. Reports appear in `ui-check.json` beside the test's startup log.
 
