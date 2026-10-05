@@ -57,8 +57,8 @@ class RegressionTests(unittest.TestCase):
     def test_rgb_addresses_validate_complete_layout(self):
         transport=FakeTransport();rgb=RGB(transport,lambda *a:None);rgb.port=0;rgb.flash=transport.memory;rgb.ready=True
         self.assertEqual(rgb.address(1,0,'A'),0x418)
-        self.assertEqual(rgb.address(1,0,'B'),0x5b8)
-        self.assertEqual(rgb.address(16,0,'B'),0x73e)
+        self.assertEqual(rgb.address(1,0,'B'),0xc38)
+        self.assertEqual(rgb.address(16,0,'B'),0xdbe)
         self.assertEqual(rgb.address(1,0,'G'),211+5);self.assertEqual(rgb.address(1,0,'F'),0xc38)
         # A remapped note or channel no longer blocks color writes.
         transport.memory[211+34*26+2]=99;self.assertEqual(rgb.address(3,0,'A'),211+34*26+5)
@@ -73,6 +73,84 @@ class RegressionTests(unittest.TestCase):
         with self.assertRaises(ValueError):rgb.address(1,0,'Z')
         with self.assertRaises(RuntimeError):rgb.apply({'pad1':'#abcdef'},0,'A')
         self.assertEqual([cmd for cmd,data in transport.sent if cmd==0x22],[])
+
+    def test_physical_bank_b_uses_dedicated_records(self):
+        transport=FakeTransport();rgb=RGB(transport,lambda *a:None);rgb.port=0
+        before=bytes(transport.memory)
+        result=rgb.apply({f'pad{i}':'#00ff00' for i in range(1,17)},0,'B')
+        self.assertTrue(all(r['ok'] for r in result))
+        for i in range(16):
+            octave=211+(48+i)*26+5;physical=211+(112+i)*26+5
+            self.assertEqual(transport.memory[octave:octave+3],before[octave:octave+3])
+            self.assertEqual(transport.memory[physical:physical+3],b'\0\xff\0')
+        touched={211+(112+i)*26+j for i in range(16) for j in [5,6,7]}
+        self.assertTrue(all(a==b for i,(a,b) in enumerate(zip(before,transport.memory)) if i not in touched))
+
+    def test_rgb_polls_hardware_before_colors_are_read(self):
+        transport=FakeTransport();rgb=RGB(transport,lambda *a:None);rgb.port=0;rgb.header=bytes(12)
+        transport.header[8]=3;rgb.keep_alive()
+        self.assertEqual(rgb.header[8],3)
+        self.assertIsNone(rgb.flash)
+
+    def test_unlock_does_not_interleave_background_polls(self):
+        transport=FakeTransport();rgb=RGB(transport,lambda *a:None);rgb.port=0;rgb.header=bytes(12)
+        entered=threading.Event();resume=threading.Event();send=transport.send
+        def slow_send(message):
+            cmd,data=decode(message)
+            if cmd==0x23 and data[0]==5 and int.from_bytes(data[1:5],'little')==0:
+                entered.set();resume.wait(3)
+            send(message)
+        transport.send=slow_send
+        worker=threading.Thread(target=rgb.unlock)
+        worker.start()
+        try:
+            self.assertTrue(entered.wait(2))
+            before=list(transport.sent);rgb.last_activity=0;rgb.keep_alive()
+            self.assertEqual(transport.sent,before)
+        finally:resume.set();worker.join(3)
+        self.assertFalse(worker.is_alive());self.assertTrue(rgb.ready)
+
+    def test_live_preset_and_bank_override_stale_apply_context(self):
+        with tempfile.TemporaryDirectory() as folder:
+            transport=FakeTransport()
+            transport.memory[2*3539:3*3539]=transport.memory[:3539]
+            controller=Controller(folder,transport)
+            try:
+                controller.rgb.port=0;controller.rgb.unlock()
+                # The last UI snapshot said Preset 7. The hardware has since
+                # switched to Preset 3 / physical Bank B without sending notes.
+                transport.header[10]=2;transport.header[11]=1
+                before=bytes(transport.memory)
+                requested=controller.request('applyRGB',{'preset':6,'bank':'B'})
+                self.assertTrue(requested['ok'])
+                deadline=time.monotonic()+5
+                while time.monotonic()<deadline:
+                    if controller.rgb_state.get('preset')==2 and controller.rgb_state.get('results'):break
+                    time.sleep(.02)
+                self.assertEqual(controller.rgb_state.get('preset'),2)
+                self.assertEqual(controller.rgb_state.get('bank'),'B')
+                self.assertTrue(all(x['ok'] for x in controller.rgb_state['results']))
+                self.assertEqual(controller.store.data['settings']['hardwarePreset'],2)
+                self.assertEqual(controller.store.current()['activeBank'],'B')
+                for i in range(16):
+                    address=2*3539+211+(112+i)*26+5
+                    expected=bytes.fromhex(controller.store.controls(bank='B')[f'pad{i+1}']['color'][1:])
+                    self.assertEqual(transport.memory[address:address+3],expected)
+                touched={2*3539+211+(112+i)*26+j for i in range(16) for j in [5,6,7]}
+                self.assertTrue(all(a==b for i,(a,b) in enumerate(zip(before,transport.memory)) if i not in touched))
+                transport.header[10]=0;transport.header[11]=0
+                controller.rgb.header=bytes(transport.header);controller._detect_preset()
+                self.assertEqual(controller.store.data['settings']['hardwarePreset'],0)
+                self.assertEqual(controller.store.current()['activeBank'],'A')
+                self.assertEqual(controller.request('snapshot')['value']['rgb']['activePreset'],0)
+                self.assertTrue(controller.request('snapshot')['value']['rgb']['presetDetection']['located'])
+            finally:controller.close()
+
+    def test_identify_never_confirms_rejected_writes(self):
+        transport=FakeTransport();events=[];rgb=RGB(transport,lambda k,d:events.append(d));rgb.port=0
+        transport.reject=True
+        with self.assertRaises(RuntimeError):rgb.identify(0,'B',hold=0)
+        self.assertFalse(any('identified' in event for event in events))
 
     def test_banks_and_preset_detection(self):
         self.assertEqual([bank_for_note(n) for n in [36,51,52,67,68,115,116,4,20,3,128]],['A','A','B','B','C','E','F','G','H',None,None])
@@ -118,13 +196,13 @@ class RegressionTests(unittest.TestCase):
             transport=FakeTransport();controller=Controller(folder,transport)
             try:
                 controller.rgb.port=0;controller.rgb.unlock();settings=controller.store.data['settings']
-                transport.header[6]=1;controller.rgb.header=bytes(transport.header)
-                self.assertFalse(controller.request('confirmPreset',{'preset':0})['value']['detecting'])
-                transport.header[6]=3;controller.rgb.header=bytes(transport.header)
+                transport.header[10]=0;controller.rgb.header=bytes(transport.header)
+                self.assertTrue(controller.request('confirmPreset',{'preset':0})['value']['detecting'])
+                transport.header[10]=2;controller.rgb.header=bytes(transport.header)
                 self.assertTrue(controller.request('confirmPreset',{'preset':2})['value']['detecting'])
-                transport.header[6]=2;controller.rgb.header=bytes(transport.header);controller._detect_preset()
+                transport.header[10]=1;controller.rgb.header=bytes(transport.header);controller._detect_preset()
                 self.assertEqual(settings['hardwarePreset'],1);self.assertEqual(controller.detected_preset(),1)
-                transport.header[6]=1;controller.rgb.header=bytes(transport.header);controller._detect_preset();self.assertEqual(settings['hardwarePreset'],0)
+                transport.header[10]=0;controller.rgb.header=bytes(transport.header);controller._detect_preset();self.assertEqual(settings['hardwarePreset'],0)
                 # Live feedback lights a playing pad on the active bank, then restores it.
                 settings.update(liveFeedback=True,liveColor='#ff0000');players=[{'control':'pad2'}]
                 controller.audio.snapshot=lambda:{'players':players}

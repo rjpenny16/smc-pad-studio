@@ -134,37 +134,48 @@ def decode(message):
 # of 3539 bytes, each holding 128 pad records of 26 bytes from offset 211. A
 # record is `?? ch note min max R G B FF ...`, so RGB starts 5 bytes in.
 PRESET_SIZE=3539;PAD_TABLE=211;PAD_RECORD=26;PAD_RGB=5
-# The hardware pad bank button moves the pads through 16-record groups. Banks A
-# and B keep their original meaning (notes 36-51 and 52-67); C-F follow upward
-# and G-H are the two groups below A.
+# The physical PAD BANK button selects the dedicated final 16 records. Those
+# records repeat notes 52-67, but are distinct from the octave group at index
+# 48. Confirmed on hardware: writing group 48 changes memory only; writing
+# group 112 changes all 16 LEDs with PAD BANK on.
 BANKS='ABCDEFGH'
-BANK_GROUP={'A':2,'B':3,'C':4,'D':5,'E':6,'F':7,'G':0,'H':1}
+BANK_GROUP={'A':2,'B':7,'C':4,'D':5,'E':6,'F':7,'G':0,'H':1}
+NOTE_GROUP={'A':2,'B':3,'C':4,'D':5,'E':6,'F':7,'G':0,'H':1}
 
 def bank_for_note(note):
     """The bank whose default note range contains this pad note, if any."""
     group=(int(note)-4)//16
-    return next((b for b,g in BANK_GROUP.items() if g==group),None) if 4<=int(note)<=127 else None
+    return next((b for b,g in NOTE_GROUP.items() if g==group),None) if 4<=int(note)<=127 else None
 
 class RGB:
     def __init__(self,transport,event):
         self.transport=transport;self.event=event;self.lock=threading.RLock();self.port=None;self.flash=None;self.header=None;self.ready=False;self.cancel=threading.Event();self.last_activity=0
 
+    def active_preset(self):
+        # Region 4, byte 10 is the zero-based preset selector. Captured on this
+        # device: SHIFT+PAD1 reports 0, SHIFT+PAD3 reports 2. Byte 11 is PAD BANK.
+        return self.header[10] if self.port is not None and self.header is not None and len(self.header)==12 and self.header[10]<8 else None
+
+    def active_bank(self):
+        return ('A','B')[self.header[11]] if self.port is not None and self.header is not None and len(self.header)==12 and self.header[11]<2 else None
+
     def request(self,cmd,data=b'',timeout=5,predicate=None):
-        if self.port is None:raise RuntimeError('Find the configuration port first')
-        while True:
-            try:self.transport.responses.get_nowait()
-            except queue.Empty:break
-        self.transport.send(encode(cmd,data));deadline=time.monotonic()+timeout
-        while time.monotonic()<deadline:
-            if self.cancel.is_set():raise RuntimeError('RGB operation cancelled')
-            try:port,message=self.transport.responses.get(timeout=.05)
-            except queue.Empty:continue
-            if port!=self.port:continue
-            try:reply,payload=decode(message)
-            except ValueError:continue
-            if predicate and not predicate(reply,payload):continue
-            self.last_activity=time.monotonic();return reply,payload
-        self.ready=False;raise TimeoutError('No matching SMC-PAD configuration reply. Close MidiSuite and reconnect USB.')
+        with self.lock:
+            if self.port is None:raise RuntimeError('Find the configuration port first')
+            while True:
+                try:self.transport.responses.get_nowait()
+                except queue.Empty:break
+            self.transport.send(encode(cmd,data));deadline=time.monotonic()+timeout
+            while time.monotonic()<deadline:
+                if self.cancel.is_set():raise RuntimeError('RGB operation cancelled')
+                try:port,message=self.transport.responses.get(timeout=.05)
+                except queue.Empty:continue
+                if port!=self.port:continue
+                try:reply,payload=decode(message)
+                except ValueError:continue
+                if predicate and not predicate(reply,payload):continue
+                self.last_activity=time.monotonic();return reply,payload
+            self.ready=False;raise TimeoutError('No matching SMC-PAD configuration reply. Close MidiSuite and reconnect USB.')
 
     def read_region(self,region,address,length,timeout=5):
         request=bytes([region])+address.to_bytes(4,'little')+length.to_bytes(3,'little')
@@ -173,7 +184,7 @@ class RGB:
 
     def discover(self,available,input_id=None,output_id=None):
         with self.lock:
-            self.cancel.clear();self.ready=False;self.flash=None
+            self.cancel.clear();self.ready=False;self.flash=None;self.header=None
             ins=[p for p in available['inputs'] if any(x in p['name'].lower() for x in ['smc','sinco'])]
             outs=[p for p in available['outputs'] if any(x in p['name'].lower() for x in ['smc','sinco'])]
             if input_id is not None and output_id is not None:
@@ -197,13 +208,14 @@ class RGB:
             raise RuntimeError('No configuration port replied. '+ ' | '.join(errors or ['No SMC-PAD port is present']))
 
     def unlock(self):
-        if self.port is None:raise RuntimeError('Connect the RGB configuration port first')
-        self.request(0x11);self.header=self.read_region(4,0,12)
-        flash=bytearray(28312)
-        for address in range(0,len(flash),1009):
-            length=min(1009,len(flash)-address);flash[address:address+length]=self.read_region(5,address,length)
-            self.event('rgb',{'state':'reading','progress':round((address+length)*100/len(flash))})
-        self.flash=flash;self.ready=True
+        with self.lock:
+            if self.port is None:raise RuntimeError('Connect the RGB configuration port first')
+            self.request(0x11);self.header=self.read_region(4,0,12)
+            flash=bytearray(28312)
+            for address in range(0,len(flash),1009):
+                length=min(1009,len(flash)-address);flash[address:address+length]=self.read_region(5,address,length)
+                self.event('rgb',{'state':'reading','progress':round((address+length)*100/len(flash))})
+            self.flash=flash;self.ready=True
 
     def address(self,pad,preset,bank):
         if not self.ready or self.flash is None:raise RuntimeError('Read device colors first')
@@ -280,7 +292,8 @@ class RGB:
             self.cancel.clear();self.unlock()
             originals={f'pad{i}':'#'+self.flash[a:a+3].hex() for i in range(1,17) for a in [self.address(i,preset,bank)]}
             try:
-                self.apply({cid:color for cid in originals},preset,bank,refresh=False)
+                changed=self.apply({cid:color for cid in originals},preset,bank,refresh=False)
+                if not all(r['ok'] for r in changed):raise RuntimeError('Identify could not paint every pad. Check the individual write results.')
                 self.cancel.wait(hold)
             finally:
                 self.cancel.clear();restored=self.apply(originals,preset,bank,refresh=False)
@@ -292,7 +305,7 @@ class RGB:
     def keep_alive(self):
         # Mirror the official app: poll the 12-byte global block about twice a
         # second. It changes when the preset/bank is switched on the hardware.
-        if self.port is None or self.header is None or self.flash is None or time.monotonic()-self.last_activity<.4:return
+        if self.port is None or self.header is None or time.monotonic()-self.last_activity<.4:return
         if not self.lock.acquire(blocking=False):return
         try:
             try:header=self.read_region(4,0,12,1)

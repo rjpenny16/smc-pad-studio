@@ -1,0 +1,280 @@
+{
+  "date": "2026-10-05",
+  "status": "passed: both physical banks confirmed through native Apply colors",
+  "baseCommit": "7abe893",
+  "fixes": {
+    "activePreset": "Region 4 byte 10, zero based",
+    "physicalBank": "Region 4 byte 11: 0=A, 1=B",
+    "bankBPadGroup": 112,
+    "previousIncorrectBankBPadGroup": 48
+  },
+  "regression": {
+    "command": "python source/test_studio.py",
+    "passed": 16,
+    "failed": 0
+  },
+  "reversibleHardware": {
+    "started": "2026-10-05 08:41:18",
+    "banks": {
+      "A": {
+        "readPads": 16,
+        "changedPadVerified": true,
+        "batchVerified": 16,
+        "colorsRestored": true
+      },
+      "B": {
+        "readPads": 16,
+        "changedPadVerified": true,
+        "batchVerified": 16,
+        "colorsRestored": true
+      }
+    },
+    "restored": true,
+    "configurationInput": "SMC-PAD",
+    "configurationOutput": "SMC-PAD",
+    "ok": true,
+    "fullConfigurationUnchanged": true
+  },
+  "nativeUiCompleted": {
+    "ok": true,
+    "results": [
+      {
+        "pads": 16,
+        "knobs": 8,
+        "profile": true,
+        "page": true,
+        "bank": true,
+        "zeroVolume": true,
+        "navigation": true,
+        "pause": true,
+        "importTarget": true,
+        "macroPreview": true,
+        "physicalPadOrientation": true,
+        "waveform": true
+      },
+      {
+        "nativeAudio": true,
+        "duration": 1.0,
+        "silentTrimmedLoop": true
+      },
+      {
+        "nativeHardwareReadBank": "A",
+        "activePreset": 1,
+        "automaticPresetSelector": true,
+        "pads": 16,
+        "performanceInput": "MIDIIN2 (SMC-PAD)",
+        "configurationInput": 0
+      },
+      {
+        "nativeHardwareReadBank": "B",
+        "activePreset": 1,
+        "automaticPresetSelector": true,
+        "pads": 16,
+        "performanceInput": "MIDIIN2 (SMC-PAD)",
+        "configurationInput": 0
+      },
+      {
+        "activePreset": 1,
+        "banks": {
+          "A": {
+            "nativeApplyButton": true,
+            "verifiedPads": 16,
+            "preset": 1,
+            "color": "#ffffff"
+          },
+          "B": {
+            "nativeApplyButton": true,
+            "verifiedPads": 16,
+            "preset": 1,
+            "color": "#00ff00"
+          }
+        },
+        "physicalObservation": "requires human confirmation",
+        "fullConfigurationRestored": true
+      },
+      {
+        "layoutWidth": 1440,
+        "width": 1426,
+        "body": 1426,
+        "content": 1207,
+        "inspector": "833.2px 300px"
+      },
+      {
+        "layoutWidth": 1100,
+        "width": 1086,
+        "body": 1086,
+        "content": 895,
+        "inspector": "561.2px 280px"
+      },
+      {
+        "layoutWidth": 800,
+        "width": 786,
+        "body": 786,
+        "content": 699,
+        "inspector": "667.2px"
+      }
+    ],
+    "hiddenRuntimeAlive": true
+  },
+  "packagedUi": {
+    "ok": true,
+    "results": [
+      {
+        "pads": 16,
+        "knobs": 8,
+        "profile": true,
+        "page": true,
+        "bank": true,
+        "zeroVolume": true,
+        "navigation": true,
+        "pause": true,
+        "importTarget": true,
+        "macroPreview": true,
+        "physicalPadOrientation": true,
+        "waveform": true
+      },
+      {
+        "nativeAudio": true,
+        "duration": 1.0,
+        "silentTrimmedLoop": true
+      },
+      {
+        "nativeHardwareReadBank": "A",
+        "activePreset": 1,
+        "automaticPresetSelector": true,
+        "pads": 16,
+        "performanceInput": "MIDIIN2 (SMC-PAD)",
+        "configurationInput": 0
+      },
+      {
+        "nativeHardwareReadBank": "B",
+        "activePreset": 1,
+        "automaticPresetSelector": true,
+        "pads": 16,
+        "performanceInput": "MIDIIN2 (SMC-PAD)",
+        "configurationInput": 0
+      },
+      {
+        "activePreset": 1,
+        "banks": {
+          "A": {
+            "nativeApplyButton": true,
+            "verifiedPads": 16,
+            "preset": 1,
+            "color": "#ffffff"
+          },
+          "B": {
+            "nativeApplyButton": true,
+            "verifiedPads": 16,
+            "preset": 1,
+            "color": "#00ff00"
+          }
+        },
+        "physicalObservation": "requires human confirmation",
+        "fullConfigurationRestored": true
+      },
+      {
+        "layoutWidth": 1440,
+        "width": 1426,
+        "body": 1426,
+        "content": 1207,
+        "inspector": "833.2px 300px"
+      },
+      {
+        "layoutWidth": 1100,
+        "width": 1086,
+        "body": 1086,
+        "content": 895,
+        "inspector": "561.2px 280px"
+      },
+      {
+        "layoutWidth": 800,
+        "width": 786,
+        "body": 786,
+        "content": 699,
+        "inspector": "667.2px"
+      }
+    ],
+    "hiddenRuntimeAlive": true
+  },
+  "humanObservedProbes": [
+    {
+      "preset": 1,
+      "bank": "A",
+      "pads": 16,
+      "color": "#ffffff",
+      "confirmed": true
+    },
+    {
+      "preset": 1,
+      "bank": "B",
+      "padGroup": 112,
+      "pads": 16,
+      "color": "#00ff00",
+      "confirmed": true
+    },
+    {
+      "preset": 3,
+      "bank": "A",
+      "pads": 16,
+      "color": "#00ffff",
+      "confirmed": true
+    },
+    {
+      "preset": 3,
+      "bank": "A",
+      "nativeApplyButton": true,
+      "pads": 16,
+      "color": "#ffffff",
+      "confirmed": true
+    }
+  ],
+  "sustainedPhysicalConfirmation": {
+    "A": {
+      "confirmed": true,
+      "pads": 16,
+      "color": "#ffffff",
+      "source": "user watching physical device"
+    },
+    "B": {
+      "confirmed": true,
+      "pads": 16,
+      "color": "#00ff00",
+      "source": "user watching physical device"
+    }
+  },
+  "liveVerificationDirectory": "C:\\Users\\rjpen\\AppData\\Local\\SMC-PAD Control Center\\Verification\\7824",
+  "exe": {
+    "path": "source/dist/SMC-PAD-Studio-v0.8.0.exe",
+    "sha256": "50c97371be78ba9230c4daf2b4e3c1d183a7abe039cda120df305cf8d069f672"
+  },
+  "sourceSha256": {
+    "source/controller.py": "0774d6382efaf4a46df8b4906a6ae2a013b3d3333121b1f4645a90b0c1e74af1",
+    "source/midi.py": "461e14ac5082d5414a0ff737da85dc8d7d91cac34ae5bd506387a47da74b293f",
+    "source/main.py": "f38405b64bdab0eb75a0f68b5a5795b4a8b284dd2dc64fbb3b8c54f0672a76dd",
+    "source/studio.html": "0464e3c72f8393613963000a86f95fddd7075219500c2cee54c948ff8abee3fd",
+    "source/test_studio.py": "c9431d9039bd7fc37ffec5fc53592fe6a4af92e997b4dd0ff6abcfcfc2261c31",
+    "source/verify_ui_colors.py": "544c4fde957d4d673d5baddc39a5af47f49be8bfdfaa2ac2b272a091c523397c"
+  },
+  "localChangesOnly": true,
+  "sustainedTestRecovery": {
+    "restored": true,
+    "fullConfigurationUnchanged": true,
+    "banksRestored": [
+      {
+        "preset": 1,
+        "bank": "A"
+      },
+      {
+        "preset": 1,
+        "bank": "B"
+      }
+    ],
+    "changedBytes": 96
+  },
+  "build": {
+    "passed": true,
+    "packagedNativeHardwareColors": true,
+    "fullConfigurationRestored": true
+  }
+}

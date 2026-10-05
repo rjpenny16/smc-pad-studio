@@ -166,18 +166,26 @@ def check_ui(window,controller,root):
         if not playing or playing[0]['volume']!=0 or not playing[0]['loop']:raise RuntimeError('Packaged audio worker verification failed')
         results.append({'nativeAudio':True,'duration':inspected['duration'],'silentTrimmedLoop':True})
     finally:controller.audio.command('stop',wait=True)
-    if '--hardware-read' in sys.argv:
+    if '--hardware-read' in sys.argv or '--hardware-colors' in sys.argv:
         controller.request('connect')
         deadline=time.monotonic()+15
         while time.monotonic()<deadline and (controller.connection['state']!='connected' or controller.device_busy):time.sleep(.1)
         if controller.connection['state']!='connected':raise RuntimeError('Packaged MIDI connection failed: '+str(controller.connection))
+        controller._detect_preset();active=controller.detected_preset()
+        window.evaluate_js('refresh()');time.sleep(.3)
+        assert window.evaluate_js("Number(document.getElementById('rgbPreset').value)")==active
+        assert window.evaluate_js("document.getElementById('rgbPreset').disabled")
         for bank in ['A','B']:
             read=controller.request('readRGB',{'preset':0,'bank':bank})
             if not read['ok']:raise RuntimeError(read['error'])
             deadline=time.monotonic()+15
             while time.monotonic()<deadline and (controller.rgb_state.get('bank')!=bank or controller.rgb_state['state']!='synced' or controller.device_busy):time.sleep(.1)
             if controller.rgb_state.get('bank')!=bank or controller.rgb_state['state']!='synced':raise RuntimeError('Packaged RGB read failed: '+str(controller.rgb_state))
-            results.append({'nativeHardwareReadBank':bank,'pads':len(controller.rgb_state['colors']),'performanceInput':controller.primary,'configurationInput':controller.rgb.port})
+            assert controller.rgb_state['preset']==active
+            results.append({'nativeHardwareReadBank':bank,'activePreset':active+1,'automaticPresetSelector':True,'pads':len(controller.rgb_state['colors']),'performanceInput':controller.primary,'configurationInput':controller.rgb.port})
+    if '--hardware-colors' in sys.argv:
+        from verify_ui_colors import check_colors
+        results.append(check_colors(window,controller,root))
     for width in [1440,1100,800]:
         window.resize(width,900);time.sleep(.25)
         geometry=window.evaluate_js("({width:innerWidth,body:document.body.scrollWidth,content:document.querySelector('.content').clientWidth,inspector:getComputedStyle(document.querySelector('.studio-layout')).gridTemplateColumns})")

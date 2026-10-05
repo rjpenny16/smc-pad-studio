@@ -21,8 +21,8 @@ Download `SMC-PAD-Studio-v0.8.0.exe` from this repository's **Releases** page an
 
 The SMC-PAD stores eight presets, and only the one it is currently using lights the pads. A write to any other preset succeeds without any visible change, so the first step is to tell Studio which preset is active.
 
-1. On the Device page choose **Read colors**, then **Identify preset**. All 16 pads of the selected preset and bank flash white and are then restored, but you only see it when that preset is the one on the hardware. Change the preset selector and try again until they flash, then choose **Pads flashed**.
-2. Switch presets on the hardware, Identify again and confirm a second preset. From then on Studio follows the hardware preset by itself. Each confirmation is stored, so this is a one-time step.
+1. Connect the device. Studio reads its active preset directly and follows the physical **PAD BANK** switch: off is Bank A, on is Bank B. The preset selector shows the detected preset automatically.
+2. Choose **Read colors**, then **Identify preset** to flash the selected bank's 16 pads white and restore them. No preset calibration is needed. Presets are changed on the controller with SHIFT plus Pads 1–8; use PAD BANK off when selecting a preset.
 3. Pick colors in the editor (or **Use device palette** to start from the device's own) and choose **Apply palette**. Saving mappings alone never writes hardware colors.
 4. Choose **Save to device** to keep the colors after the controller is unplugged. Without it, the device may return to its previously saved colors at power-up.
 
@@ -30,11 +30,11 @@ Settings → **Light pads while their audio clips play** paints a pad in the pla
 
 Windows can expose the configuration endpoint as `SMC-PAD`, `MIDIIN2/3 (SMC-PAD)` or `MIDIOUT2/3 (SMC-PAD)` instead of a name containing “Private.” Discovery verifies replies instead of requiring that exact label. Performance input discovery also follows actual pad/encoder activity; manual selection takes precedence.
 
-Hardware writes are serialized, re-establish the device session first, touch only the three RGB bytes for each pad, check device acknowledgements and read every color back. A failed or cancelled batch reports individual pad results. Each pad's color slot is fixed by the firmware's memory layout, so pads with remapped MIDI notes can still be colored; a preset or pad whose records are unrecognized stays write-protected. Studio never switches the hardware preset itself.
+Hardware writes are serialized, re-establish the device session first, touch only the three RGB bytes for each pad, check device acknowledgements and read every color back. A failed or cancelled batch reports individual pad results. Bank B uses the final 16 dedicated pad records, distinct from the octave records with the same MIDI notes. A preset or pad whose records are unrecognized stays write-protected. Studio rechecks the active preset immediately before queued reads and writes. Studio never switches the hardware preset itself.
 
 ## Everyday controls
 
-- Profiles have application pages and eight pad banks, A to H, matching the hardware pad bank button. With the factory note layout, A is notes 36–51, B 52–67, C–F continue upward and G–H are notes 4–35 (hover a bank button for its range). Pressing a pad switches the screen to that pad's bank. Banks C–H are added to a profile the first time they are used. Different pages provide different action sets without rewriting hardware MIDI settings.
+- Profiles have application pages and local mapping banks. A and B match the controller’s two physical pad banks (factory notes 36–51 and 52–67). The extra C–H mapping banks cover other MIDI note ranges; they are not extra positions of the physical PAD BANK button. Banks C–H are added to a profile the first time they are used. Different pages provide different action sets without rewriting hardware MIDI settings.
 - App rules accept executable names separated by commas, such as `chrome.exe, msedge.exe`. Enable automatic profiles in Settings and unpin the active profile to allow switching.
 - Macros support ordered actions, waits, duplication, reordering, a dry-run preview and cancellation. Dry-run executes nothing. Pause stops queued mappings/macros; Stop Audio is separate.
 - Encoder controls offer absolute/relative/auto interpretation, sensitivity, inversion, acceleration and a live input preview. Choose Absolute for the stock absolute SMC-PAD encoders if auto interpretation is unsuitable.

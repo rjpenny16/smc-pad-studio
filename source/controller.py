@@ -56,6 +56,7 @@ class Controller:
     def __init__(self,root,transport=None):
         self.lock=threading.RLock();self.logs=deque(maxlen=300);self.store=Store(root);self.revision=1;self.window=None;self.quitting=False;self.paused=False;self.learning=None;self.previous={};self.primary='';self.connection={'state':'disconnected','message':'Connect your SMC-PAD to begin'};self.rgb_state={'state':'notRead','colors':{},'results':[]};self.last_midi=None;self.available=ports();self.action_queue=queue.Queue(256);self.device_queue=queue.Queue(8);self.cancel_actions=threading.Event();self.stop=threading.Event();self.last_monitor=0;self.calibration={};self._reconnect=None
         self.performance_auto=False;self.performance_candidates=set();self.rgb_epoch=0;self.device_busy=False
+        self.hardware_bank_marker=None
         self.live_lit={};self.live_retry=0
         self.download={'state':'idle'};self.download_cancel=threading.Event();self.download_thread=None;self.waveforms={}
         self.audio=Audio(self.event);self.transport=transport or Transport(self.on_midi);self.rgb=RGB(self.transport,self.event)
@@ -168,10 +169,18 @@ class Controller:
             if command in ['read','apply','identify','save'] and data.get('epoch')!=self.rgb_epoch:continue
             self.device_busy=True
             try:
+                if command in ['read','apply','identify']:
+                    # Resolve the live preset when the queued operation actually
+                    # runs, rather than trusting a stale dropdown or snapshot.
+                    self.rgb.header=self.rgb.read_region(4,0,12)
+                    self._detect_preset()
+                    active=self.detected_preset()
+                    if active is not None:data['preset']=active
                 if command=='connect':
                     self.available=ports();requested=data.get('performanceInput')
                     for port_id in list(self.transport.inputs):self.transport.close_input(port_id)
                     self.transport.close_output();self.rgb.port=None;self.rgb.ready=False;self.primary=''
+                    self.hardware_bank_marker=None
                     try:self.rgb.discover(self.available,data.get('rgbInput'),data.get('rgbOutput'))
                     except Exception as exc:self.event('rgb',{'state':'unavailable','message':str(exc)})
                     candidates=[p for p in self.available['inputs'] if any(name in p['name'].lower() for name in ['smc','sinco']) and 'private' not in p['name'].lower()]
@@ -199,18 +208,24 @@ class Controller:
         except Exception:logging.exception('Live feedback restore failed')
 
     def _detect_preset(self):
-        """Follow the hardware preset once Identify confirmations located its byte."""
-        header=self.rgb.header;settings=self.store.data['settings']
-        located=preset_locator(settings.get('presetSamples'))
-        if not header or not located:return
-        preset=header[located[0]]-located[1]
-        if 0<=preset<=7 and preset!=settings['hardwarePreset']:
+        """Follow the live preset and physical PAD BANK switch."""
+        settings=self.store.data['settings'];preset=self.detected_preset()
+        if preset is not None and preset!=settings['hardwarePreset']:
             with self.lock,self.store.lock:settings['hardwarePreset']=preset;self.store.persist();self._changed()
             self.event('device',{'message':f'Hardware switched to Preset {preset+1}'})
+        bank=self.rgb.active_bank();marker=(preset,bank)
+        if bank is not None and marker!=self.hardware_bank_marker:
+            self.hardware_bank_marker=marker
+            with self.lock,self.store.lock:
+                current=self.store.current()
+                if current['activeBank']!=bank:
+                    current['activeBank']=bank;self.previous.clear();self.store.persist();self._changed()
 
     def detected_preset(self):
+        active=self.rgb.active_preset()
+        if active is not None:return active
         located=preset_locator(self.store.data['settings'].get('presetSamples'))
-        if not located or not self.rgb.header:return None
+        if self.rgb.port is None or not self.rgb.header or not located:return None
         preset=self.rgb.header[located[0]]-located[1]
         return preset if 0<=preset<=7 else None
 
@@ -279,7 +294,8 @@ class Controller:
         if command=='snapshot':
             with self.lock,self.store.lock:
                 located=preset_locator(self.store.data['settings'].get('presetSamples'))
-                rgb={**copy.deepcopy(self.rgb_state),'activePreset':self.detected_preset(),'presetDetection':{'located':located is not None,'presets':len({x['preset'] for x in self.store.data['settings'].get('presetSamples',[])})}}
+                active=self.detected_preset()
+                rgb={**copy.deepcopy(self.rgb_state),'activePreset':active,'activeBank':self.rgb.active_bank(),'presetDetection':{'located':active is not None,'presets':len({x['preset'] for x in self.store.data['settings'].get('presetSamples',[])})}}
                 result={'version':VERSION,'revision':self.revision,'connection':copy.deepcopy(self.connection),'rgb':rgb,'ports':copy.deepcopy(self.available),'audio':self.audio.snapshot(),'paused':self.paused,'learning':self.learning,'midi':self.last_midi,'calibration':copy.deepcopy(self.calibration),'logs':list(self.logs)[-70:],'droppedMidi':self.transport.dropped,'download':copy.deepcopy(self.download)}
                 if data.get('revision')!=self.revision:result['store']=self.store.snapshot()
                 return result
@@ -304,7 +320,7 @@ class Controller:
                 samples=[x for x in settings['presetSamples'] if x['preset']!=preset]+[{'header':self.rgb.header.hex(),'preset':preset}]
                 settings['presetSamples']=samples[-8:];settings['hardwarePreset']=preset
                 self.rgb_state.pop('identified',None);self.store.persist();self._changed()
-            return {'detecting':preset_locator(settings['presetSamples']) is not None,'presets':len({x['preset'] for x in settings['presetSamples']})}
+            return {'detecting':self.detected_preset() is not None,'presets':len({x['preset'] for x in settings['presetSamples']})}
         if command in ['readRGB','applyRGB','identifyRGB']:
             if self.rgb.port is None:raise RuntimeError('Connect the device configuration port first')
             if self.device_busy or not self.device_queue.empty():raise RuntimeError('Wait for the current device operation, or cancel it first')
