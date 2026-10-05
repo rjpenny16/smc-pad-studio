@@ -1,3 +1,6 @@
 pywebview==6.2.1
 pythonnet==3.1.0
 PyInstaller==6.21.0
+yt-dlp==2026.8.19
+yt-dlp-ejs==0.8.0
+imageio-ffmpeg==0.6.0

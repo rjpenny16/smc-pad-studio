@@ -31,7 +31,7 @@ def main():
     try:
         ROOT.mkdir(parents=True,exist_ok=True)
         logging.basicConfig(level=logging.INFO,handlers=[RotatingFileHandler(ROOT/'startup.log',maxBytes=2_000_000,backupCount=3,encoding='utf8')],format='%(asctime)s %(levelname)s %(message)s',force=True)
-        logging.info('Starting SMC-PAD Studio 0.7.0 pid=%s',os.getpid())
+        logging.info('Starting SMC-PAD Studio 0.8.0 pid=%s',os.getpid())
         instance_suffix='.test.'+str(os.getpid()) if '--ui-check' in sys.argv else ''
         mutex=kernel.CreateMutexW(None,False,'Local\\SMCPADStudio'+instance_suffix)
         if not mutex:raise C.WinError(C.get_last_error())
@@ -143,11 +143,12 @@ def check_ui(window,controller,root):
       await window.pywebview.api.request('newPage',{name:'Creative'});await refresh();
       assert(document.getElementById('pageSelect').selectedOptions[0].textContent==='Creative','Page not rendered');
       await window.pywebview.api.request('switchPage',{bank:'B'});await refresh();assert(document.getElementById('bankB').classList.contains('active'),'Bank switch');
+      const shape=await window.pywebview.api.request('waveform',{path:window.checkClip,width:120});assert(shape.ok&&shape.value.peaks.length===120,'Waveform');
       for(const view of ['soundboard','profiles','device','settings','studio']){await showView(view);assert(!document.getElementById('view-'+view).classList.contains('hidden'),'View '+view);}
       await window.pywebview.api.request('pause',{paused:true});await refresh();assert(document.getElementById('pauseBtn').textContent.includes('Resume'),'Pause state');
       await window.pywebview.api.request('pause',{paused:false});
       await window.pywebview.api.request('switchProfile',{id:initial.id});await refresh();
-      return {pads:16,knobs:8,profile:true,page:true,bank:true,zeroVolume:true,navigation:true,pause:true,importTarget:true,macroPreview:true,physicalPadOrientation:true};
+      return {pads:16,knobs:8,profile:true,page:true,bank:true,zeroVolume:true,navigation:true,pause:true,importTarget:true,macroPreview:true,physicalPadOrientation:true,waveform:true};
     })()"""
     window.run_js('window.__checkResult=null;'+script+'.then(value=>window.__checkResult={ok:true,value}).catch(error=>window.__checkResult={ok:false,error:String(error)})')
     deadline=time.monotonic()+30

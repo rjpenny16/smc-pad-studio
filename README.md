@@ -1,6 +1,6 @@
-# SMC-PAD Studio 0.7.0
+# SMC-PAD Studio 0.8.0
 
-Download `SMC-PAD-Studio-v0.7.0.exe` from this repository's **Releases** page and run it. Each release also carries `SHA256.txt` for checking the download. No Python installation is needed. This is a dedicated Windows desktop window with a native MIDI/audio runtime and a tray menu. It loads its bundled interface directly; there is no localhost page or HTTP server to start.
+Download `SMC-PAD-Studio-v0.8.0.exe` from this repository's **Releases** page and run it. Each release also carries `SHA256.txt` for checking the download. No Python installation is needed. This is a dedicated Windows desktop window with a native MIDI/audio runtime and a tray menu. It loads its bundled interface directly; there is no localhost page or HTTP server to start.
 
 ## First session
 
@@ -9,6 +9,13 @@ Download `SMC-PAD-Studio-v0.7.0.exe` from this repository's **Releases** page an
 3. Select a pad or encoder, choose an action, then **Learn physical control** and press or turn it. Save the control. **Test** executes its action immediately.
 4. For audio, choose **Audio clip**, browse or drop a supported file, and set gain, trim, playback mode, loop and fades. The Soundboard view holds imported clips and the live mixer.
 5. For hardware lighting, see **Pad colors** below.
+
+## YouTube audio and cropping
+
+- **YouTube to MP3:** paste a youtube.com or youtu.be link into **Import from YouTube** on the Soundboard, or into **Or paste a YouTube link** in a pad's Audio clip settings, and choose Download MP3 / Get MP3. Studio saves the audio as an MP3 in your clip library, and the pad version also assigns it to that pad. Progress and Cancel appear under the field. Single videos up to 3 hours are supported; playlists and live streams are not. Only download audio you have the right to use.
+- YouTube now requires a JavaScript runtime for downloads. If a download fails with a message about one, install [Deno](https://deno.com) (`winget install DenoLand.Deno`) or Node.js and restart Studio. YouTube changes often, so a download that stops working usually needs a newer Studio release with an updated yt-dlp.
+- **Cropping:** every audio pad and the Soundboard's Selected clip panel show the clip's waveform. Drag either handle to set the start or end, drag the highlighted part to move the whole selection, or click the waveform to move the nearest edge there. With a handle focused, the arrow keys nudge it by 0.1 s (Shift: 1 s). **Full clip** resets the selection, and the trim fields below stay in sync for exact values. A gold line follows the clip while it plays.
+- Cropping a pad is non-destructive: the pad plays only the selected part and the original file is unchanged. On the Soundboard, **Assign clip** assigns only the selected part, and **Save as new clip** writes the selection to a separate file in your library.
 
 ## Pad colors
 
@@ -49,12 +56,12 @@ Data lives under `%LOCALAPPDATA%\SMC-PAD Control Center`:
 
 - `studio.json`: profiles/settings, saved atomically.
 - `studio.json.bak`: previous saved state; corrupt originals are preserved when recovery runs.
-- `Audio`: managed imported clips.
+- `Audio`: managed imported clips, YouTube downloads and cropped copies.
 - `startup.log`: rotating startup/runtime logs.
 
 Open **Connection details** for current activity, or export a troubleshooting report from Device. Startup/native setup errors display a Windows error dialog and name the log file. Missing/busy MIDI ports, codec errors, rejected RGB writes and queue overflow are reported in the interface.
 
-Requirements: Windows x64 with Microsoft Edge WebView2 Runtime and .NET Framework 4.x (present on the Windows 11 system used for verification). WAV playback was tested with the Windows media engine. MP3/M4A/AAC/WMA/FLAC depend on the codecs available to that engine on your PC. Playback uses the default Windows output; per-device output selection is outside this release. This local build is unsigned.
+Requirements: Windows x64 with Microsoft Edge WebView2 Runtime and .NET Framework 4.x (present on the Windows 11 system used for verification). WAV playback was tested with the Windows media engine. MP3/M4A/AAC/WMA/FLAC depend on the codecs available to that engine on your PC. YouTube conversion, waveforms and cropping use the FFmpeg program bundled with Studio. Playback uses the default Windows output; per-device output selection is outside this release. This local build is unsigned.
 
 ## Verification and source
 

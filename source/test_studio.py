@@ -1,8 +1,10 @@
 """Regression checks; safe to run without executing shortcuts or hardware writes."""
 import copy
 import json
+import math
 from pathlib import Path
 import queue
+import struct
 import tempfile
 import threading
 import time
@@ -16,6 +18,7 @@ from midi import RGB,encode,decode,bank_for_note
 from controller import Controller,matches,signature,delta
 from audio import Audio
 import actions
+import media
 
 class FakeTransport:
     def __init__(self):
@@ -201,5 +204,46 @@ class RegressionTests(unittest.TestCase):
                 audio.command('master',{'volume':0},wait=True);self.assertEqual(audio.snapshot()['masterVolume'],0)
                 audio.command('play',req,wait=True);audio.command('stop',wait=True);self.assertEqual(len(snapshot()),0)
             finally:audio.close()
+
+    def test_media_waveform_crop_and_youtube_import(self):
+        with tempfile.TemporaryDirectory() as folder:
+            clip=Path(folder)/'tone.wav'
+            # One second of silence, then one second of a 200 Hz tone at half scale.
+            with wave.open(str(clip),'wb') as f:
+                f.setnchannels(1);f.setsampwidth(2);f.setframerate(8000)
+                f.writeframes(bytes(8000*2)+b''.join(struct.pack('<h',int(16384*math.sin(2*math.pi*200*i/8000))) for i in range(8000)))
+            shape=media.waveform(clip,100);self.assertAlmostEqual(shape['duration'],2,places=1);self.assertEqual(len(shape['peaks']),100)
+            self.assertEqual(max(shape['peaks'][:45]),0);self.assertGreater(min(shape['peaks'][55:]),.4);self.assertLess(max(shape['peaks']),.6)
+            cropped=media.crop(clip,Path(folder)/'Audio',.5,1.5);self.assertEqual(cropped['name'],'tone (cropped).wav')
+            self.assertAlmostEqual(media.waveform(cropped['path'],50)['duration'],1,places=1)
+            with self.assertRaises(ValueError):media.crop(clip,Path(folder)/'Audio',1,1)
+            self.assertEqual(media.youtube_url(' youtu.be/abc '),'https://youtu.be/abc')
+            for bad in ['','https://example.com/watch?v=abc','https://youtube.com.evil.net/x','file:///C:/Windows/win.ini','ftp://youtube.com/x']:
+                with self.assertRaises(ValueError):media.youtube_url(bad)
+            self.assertEqual(media.clean_name('a/b:c*?"<>|. '),'abc')
+            controller=Controller(Path(folder)/'studio',FakeTransport())
+            try:
+                self.assertEqual(len(controller.request('waveform',{'path':str(clip),'width':80})['value']['peaks']),80)
+                saved=controller.request('cropClip',{'path':str(clip),'start':1,'end':2})['value']
+                self.assertTrue(Path(saved['path']).is_relative_to(controller.store.root/'Audio'))
+                self.assertFalse(controller.request('cropClip',{'path':str(Path(folder)/'missing.wav'),'start':0,'end':1})['ok'])
+                self.assertFalse(controller.request('youtubeImport',{'url':'https://example.com/v'})['ok'])
+                self.assertFalse(controller.request('youtubeImport',{'url':'https://youtu.be/abc','assign':{'id':'nope'}})['ok'])
+                def fake(url,folder,progress,cancel):
+                    progress(state='downloading',percent=50,title='Song');return {**media.crop(clip,folder,0,1,'Song'),'title':'Song','duration':1}
+                with patch.object(media,'youtube_mp3',fake):
+                    controller.store.controls()['pad1']=validate_control('pad1',{'label':'Kept','trimStart':3,'trimEnd':4})
+                    job=controller.request('youtubeImport',{'url':'https://www.youtube.com/watch?v=abc','assign':{'id':'pad1'}})['value']
+                    controller.download_thread.join(10)
+                download=controller.request('snapshot',{})['value']['download'];pad=controller.store.controls()['pad1']
+                self.assertEqual((download['state'],download['job'],download['clip']['name']),('done',job,'Song.wav'))
+                self.assertEqual((pad['action'],pad['audioName'],pad['label'],pad['trimStart'],pad['trimEnd']),('playAudio','Song.wav','Kept',0,0))
+                self.assertTrue(Path(pad['value']).is_file())
+                def cancelled(url,folder,progress,cancel):
+                    cancel.wait(5);raise media.Cancelled('Download cancelled')
+                with patch.object(media,'youtube_mp3',cancelled):
+                    controller.request('youtubeImport',{'url':'https://youtu.be/abc'});controller.request('cancelYoutube');controller.download_thread.join(5)
+                self.assertEqual(controller.download['state'],'cancelled')
+            finally:controller.close()
 
 if __name__=='__main__':unittest.main(verbosity=2)

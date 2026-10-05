@@ -15,10 +15,11 @@ import uuid
 
 import actions
 from audio import Audio
+import media
 from midi import Transport,RGB,ports,bank_for_note
 from store import Store,profile,page,validate_control,number,preset_locator,AUDIO_EXTS,TYPES,BANKS
 
-VERSION='0.7.0'
+VERSION='0.8.0'
 KNOBS={'volumeKnob':('volumeDown','volumeUp'),'scrollKnob':('scrollDown','scrollUp'),'hscrollKnob':('scrollLeft','scrollRight'),'zoomKnob':('zoomOut','zoomIn'),'tabKnob':('previousTab','nextTab'),'windowKnob':('previousWindow','nextWindow'),'desktopKnob':('desktopLeft','desktopRight')}
 
 def signature(port,data):
@@ -56,6 +57,7 @@ class Controller:
         self.lock=threading.RLock();self.logs=deque(maxlen=300);self.store=Store(root);self.revision=1;self.window=None;self.quitting=False;self.paused=False;self.learning=None;self.previous={};self.primary='';self.connection={'state':'disconnected','message':'Connect your SMC-PAD to begin'};self.rgb_state={'state':'notRead','colors':{},'results':[]};self.last_midi=None;self.available=ports();self.action_queue=queue.Queue(256);self.device_queue=queue.Queue(8);self.cancel_actions=threading.Event();self.stop=threading.Event();self.last_monitor=0;self.calibration={};self._reconnect=None
         self.performance_auto=False;self.performance_candidates=set();self.rgb_epoch=0;self.device_busy=False
         self.live_lit={};self.live_retry=0
+        self.download={'state':'idle'};self.download_cancel=threading.Event();self.download_thread=None;self.waveforms={}
         self.audio=Audio(self.event);self.transport=transport or Transport(self.on_midi);self.rgb=RGB(self.transport,self.event)
         self.audio.master=number(self.store.data.get('settings',{}).get('masterVolume'),100,0,100)
         self.action_thread=threading.Thread(target=self._actions,name='Actions',daemon=True);self.action_thread.start()
@@ -278,7 +280,7 @@ class Controller:
             with self.lock,self.store.lock:
                 located=preset_locator(self.store.data['settings'].get('presetSamples'))
                 rgb={**copy.deepcopy(self.rgb_state),'activePreset':self.detected_preset(),'presetDetection':{'located':located is not None,'presets':len({x['preset'] for x in self.store.data['settings'].get('presetSamples',[])})}}
-                result={'version':VERSION,'revision':self.revision,'connection':copy.deepcopy(self.connection),'rgb':rgb,'ports':copy.deepcopy(self.available),'audio':self.audio.snapshot(),'paused':self.paused,'learning':self.learning,'midi':self.last_midi,'calibration':copy.deepcopy(self.calibration),'logs':list(self.logs)[-70:],'droppedMidi':self.transport.dropped}
+                result={'version':VERSION,'revision':self.revision,'connection':copy.deepcopy(self.connection),'rgb':rgb,'ports':copy.deepcopy(self.available),'audio':self.audio.snapshot(),'paused':self.paused,'learning':self.learning,'midi':self.last_midi,'calibration':copy.deepcopy(self.calibration),'logs':list(self.logs)[-70:],'droppedMidi':self.transport.dropped,'download':copy.deepcopy(self.download)}
                 if data.get('revision')!=self.revision:result['store']=self.store.snapshot()
                 return result
         if command=='refresh':self.available=ports();return self.available
@@ -389,6 +391,27 @@ class Controller:
             return values
         if command=='previewAudio':
             cfg=data.get('control',{});path=data.get('path',cfg.get('value',''));self.audio.command('play',{**cfg,'value':path,'control':'preview','mode':'restart'});return True
+        if command=='youtubeImport':
+            url=media.youtube_url(data.get('url'));assign=data.get('assign')
+            if self.download_thread and self.download_thread.is_alive():raise RuntimeError('A YouTube download is already running')
+            if assign is not None:
+                assign={k:assign[k] for k in ['profile','page','bank','id'] if k in assign}
+                if assign.get('id') not in self._target(assign):raise ValueError('Unknown control')
+            self.download_cancel=threading.Event();self.download={'state':'fetching','job':uuid.uuid4().hex,'url':url,'percent':None,'assign':assign}
+            self.download_thread=threading.Thread(target=self._youtube,args=(url,assign,self.download_cancel),name='YouTube import',daemon=True);self.download_thread.start()
+            return self.download['job']
+        if command=='cancelYoutube':self.download_cancel.set();return True
+        if command in ['waveform','cropClip']:
+            path=Path(str(data.get('path',''))).resolve(strict=True)
+            if path.suffix.lower() not in AUDIO_EXTS:raise ValueError('Unsupported audio format')
+            if command=='cropClip':
+                clip=media.crop(path,self.store.root/'Audio',number(data.get('start'),0,0,86400),number(data.get('end'),0,0,86400),data.get('name'))
+                self.event('audio',{'message':'Cropped clip saved: '+clip['name']});return clip
+            key=(str(path),path.stat().st_mtime_ns,int(number(data.get('width'),1000,50,4000)))
+            if key not in self.waveforms:
+                if len(self.waveforms)>=24:self.waveforms.pop(next(iter(self.waveforms)))
+                self.waveforms[key]=media.waveform(path,key[2]);self.audio.duration.setdefault(str(path),self.waveforms[key]['duration'])
+            return self.waveforms[key]
         if command=='inspectAudio':return self.audio.command('inspect',{'value':data['path']},wait=True)
         if command=='browse':
             paths=self._dialog('file');return paths[0] if paths else ''
@@ -409,6 +432,26 @@ class Controller:
         if command=='quit':self.quitting=True;self.window.destroy() if self.window else None;return True
         raise ValueError('Unknown UI command')
 
+    def _youtube(self,url,assign,cancel):
+        def progress(**update):
+            with self.lock:
+                if self.download_cancel is cancel:self.download.update(update)
+        try:
+            clip=media.youtube_mp3(url,self.store.root/'Audio',progress,cancel)
+            if assign is not None:
+                with self.lock,self.store.lock:
+                    self.store.checkpoint();control=self._target(assign)[assign['id']]
+                    control.update(action='playAudio',value=clip['path'],audioName=clip['name'],trimStart=0,trimEnd=0)
+                    self.store.persist();self._changed()
+            with self.lock:self.download.update(state='done',percent=100,clip=clip,title=clip['title'])
+            self.event('audio',{'message':'YouTube audio saved: '+clip['name']+(' and assigned to '+assign['id'] if assign else '')})
+        except media.Cancelled:
+            with self.lock:self.download.update(state='cancelled',message='Download cancelled')
+        except Exception as exc:
+            logging.exception('YouTube import failed')
+            with self.lock:self.download.update(state='error',message=str(exc))
+            self.event('error',{'message':str(exc)})
+
     def _dialog(self,kind):
         if self.window is None:raise RuntimeError('File dialogs require the desktop window')
         import webview
@@ -417,6 +460,6 @@ class Controller:
         return self.window.create_file_dialog(webview.FileDialog.OPEN,allow_multiple=kind=='audio',file_types={'audio':('Audio (*.wav;*.mp3;*.m4a;*.aac;*.wma;*.flac)',),'profile':('SMC-PAD profile (*.json;*.zip)',),'file':('All files (*.*)',)}[kind])
 
     def close(self):
-        self.stop.set();self.cancel_macros();self.rgb.cancel.set()
+        self.stop.set();self.cancel_macros();self.rgb.cancel.set();self.download_cancel.set()
         self.device_thread.join(6);self.transport.close();self.audio.close();self.store.persist()
         self.action_thread.join(1);self.poll_thread.join(1)
