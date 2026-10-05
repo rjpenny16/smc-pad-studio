@@ -1,6 +1,6 @@
-pywebview 6.2.1: BSD 3-Clause License
+BSD 2-Clause License
 
-Copyright (c) 2014-2017, Roman Sirokov
+Copyright (c) 2019-2025, imageio
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
@@ -13,10 +13,6 @@ modification, are permitted provided that the following conditions are met:
   this list of conditions and the following disclaimer in the documentation
   and/or other materials provided with the distribution.
 
-* Neither the name of the copyright holder nor the names of its
-  contributors may be used to endorse or promote products derived from
-  this software without specific prior written permission.
-
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
 AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
@@ -27,21 +23,3 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-pythonnet 3.1.0: MIT
-clr_loader 0.3.1: See included license.
-cffi 2.0.0: MIT
-pycparser 3.0: BSD-3-Clause
-bottle 0.13.4: MIT
-proxy_tools 0.1.0: MIT
-typing_extensions 4.15.0: PSF-2.0
-Jinja2 3.1.6: See included license.
-MarkupSafe 3.0.3: BSD-3-Clause
-yt-dlp 2026.8.19: Unlicense
-yt-dlp-ejs 0.8.0: Unlicense AND MIT AND ISC (bundled meriyah: ISC; astring: MIT). See included license.
-imageio-ffmpeg 0.6.0: BSD-2-Clause
-FFmpeg (executable bundled by imageio-ffmpeg for MP3 conversion, waveforms and cropping): GPL. It runs as a separate program. Source code and license: https://ffmpeg.org/legal.html and https://github.com/imageio/imageio-binaries
-pyinstaller 6.21.0: GPLv2-or-later with a special exception which allows to use PyInstaller to build and distribute non-free programs (including commercial ones)
-
-Protocol reference: https://github.com/spectalive/smc-pad
-Independently implemented wire-format support. No decompiled vendor code is included.
