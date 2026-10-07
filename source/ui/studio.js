@@ -97,8 +97,9 @@ const storedControl = (where) => bankControls(where)[where.id];
 const describeMapping = (m) => `${m.kind} ${m.data1}, channel ${m.channel + 1}`;
 // A readable name for a control id: pad3 -> Pad 3.
 function controlTitle(id) {
-  const match = /^(pad|knob|side)(\d+)$/.exec(String(id));
-  if (!match) return String(id)[0].toUpperCase() + String(id).slice(1);
+  const text = String(id ?? '');
+  const match = /^(pad|knob|side)(\d+)$/.exec(text);
+  if (!match) return text.charAt(0).toUpperCase() + text.slice(1);
   return { pad: 'Pad ', knob: 'Knob ', side: 'Button ' }[match[1]] + match[2];
 }
 async function call(command, data = {}) {

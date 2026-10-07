@@ -286,8 +286,9 @@ class Controller:
             cfg = controls[cid]
             if cid.startswith('knob') or is_press(data):
                 # Shown briefly on the canvas, also while paused, so mappings are easy to check.
-                self.hit_seq += 1
-                self.hits.append({'id': cid, 'bank': bank, 'page': current['activePage'], 'seq': self.hit_seq})
+                with self.lock:
+                    self.hit_seq += 1
+                    self.hits.append({'id': cid, 'bank': bank, 'page': current['activePage'], 'seq': self.hit_seq})
             key = (current['id'], current['activePage'], bank, cid)
             value = data[2] if len(data) > 2 else data[1]
             if cid.startswith('knob'):
