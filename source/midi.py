@@ -264,6 +264,15 @@ def bank_for_note(note):
     return next((b for b, g in NOTE_GROUP.items() if g == group), None) if 4 <= int(note) <= 127 else None
 
 
+def default_mapping(bank, cid):
+    """The factory MIDI input of a pad in a bank: a note on channel 10 from the bank's
+    16-note group (the same ranges bank_for_note recognises), or None."""
+    if not cid.startswith('pad') or bank not in NOTE_GROUP:
+        return None
+    note = 4 + NOTE_GROUP[bank] * 16 + int(cid[3:]) - 1
+    return {'kind': 'note', 'channel': 9, 'data1': note, 'port': ''} if note <= 127 else None
+
+
 class RGB:
     def __init__(self, transport, event):
         self.transport = transport
@@ -542,18 +551,29 @@ class RGB:
                 self.event('rgb', {'state': 'error', 'message': 'Configuration session lost: ' + str(exc)})
                 return
             if header != self.header:
-                self.event(
-                    'rgb',
-                    {
-                        'state': 'stale',
-                        'message': 'Device state changed on the hardware ('
-                        + self.header.hex(' ')
-                        + ' -> '
-                        + header.hex(' ')
-                        + '). Colors will be re-read before the next write.',
-                    },
-                )
+                previous = self.header
+                changed = {i for i in range(len(header)) if i >= len(previous) or header[i] != previous[i]}
                 self.header = header
                 self.ready = False
+                if len(header) == len(previous) and changed <= {10, 11}:
+                    # The person pressed PAD BANK or picked another preset: normal use,
+                    # not a warning. Controller._detect_preset reports preset changes.
+                    bank = self.active_bank()
+                    update = {'state': 'available'}
+                    if 11 in changed and bank:
+                        update['message'] = 'PAD BANK switched to Bank ' + bank
+                    self.event('rgb', update)
+                else:
+                    self.event(
+                        'rgb',
+                        {
+                            'state': 'stale',
+                            'message': 'Device state changed on the hardware ('
+                            + previous.hex(' ')
+                            + ' -> '
+                            + header.hex(' ')
+                            + '). Colors will be re-read before the next write.',
+                        },
+                    )
         finally:
             self.lock.release()

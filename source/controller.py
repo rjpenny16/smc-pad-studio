@@ -17,12 +17,12 @@ import uuid
 import actions
 from audio import Audio
 import media
-from midi import Transport, RGB, ports, bank_for_note, DEVICE_NAMES
+from midi import Transport, RGB, ports, bank_for_note, default_mapping, DEVICE_NAMES, NOTE_GROUP
 from store import Store, profile, page, validate_control, number, preset_locator, AUDIO_EXTS, BANKS
 
 VERSION = '0.8.0'
 # Boolean settings the interface may switch.
-SETTING_SWITCHES = ['autoProfiles', 'reducedMotion', 'liveFeedback']
+SETTING_SWITCHES = ['autoProfiles', 'reducedMotion', 'liveFeedback', 'autoConnect']
 # Commands that edit profile content; anything else here is navigation or a preference.
 EDITS = {
     'copyControls': 'Copy configuration',
@@ -59,6 +59,33 @@ def matches(mapping, sig, primary):
         and all(mapping.get(k) == sig.get(k) for k in ['kind', 'channel', 'data1'])
         and (mapping.get('port') == sig['port'] if mapping.get('port') else sig['port'] == primary)
     )
+
+
+def input_key(mapping):
+    """The physical input a mapping listens to, for spotting two controls on one input."""
+    return (mapping['kind'], mapping['channel'], mapping['data1'])
+
+
+def effective_mappings(controls, bank):
+    """The MIDI input each control in a bank responds to.
+
+    A learned mapping always wins. A pad that was never learned uses its factory
+    note (midi.default_mapping), unless another control in the bank learned that
+    same input, so pads work out of the box without double-triggering."""
+    learned = {cid: cfg['mapping'] for cid, cfg in controls.items() if cfg['mapping']}
+    claimed = {input_key(m) for m in learned.values()}
+    result = dict(learned)
+    for cid in controls:
+        default = None if cid in learned else default_mapping(bank, cid)
+        if default and input_key(default) not in claimed:
+            result[cid] = default
+    return result
+
+
+def is_press(data):
+    """True for note-on and non-zero CC messages; note-off or a zero value is a release."""
+    high = data[0] & 0xF0
+    return not (high == 0x80 or high in [0x90, 0xB0] and (data[2] if len(data) > 2 else 0) == 0)
 
 
 def delta(previous, value, mode):
@@ -99,7 +126,7 @@ def foreground_executable():
 
 
 class Controller:
-    def __init__(self, root, transport=None):
+    def __init__(self, root, transport=None, auto_connect=False):
         self.lock = threading.RLock()
         self.logs = deque(maxlen=300)
         self.log_seq = 0
@@ -123,7 +150,13 @@ class Controller:
         self.stop = threading.Event()
         self.last_monitor = 0
         self.calibration = {}
-        self._reconnect = None
+        # None: never connect on our own. A dict (even {}): connect, or reconnect, with these choices.
+        self._reconnect = {} if auto_connect and self.store.data['settings']['autoConnect'] else None
+        self._smc_ports = None
+        self._retry_at = 0
+        self._connect_failures = 0
+        self.hits = deque(maxlen=16)
+        self.hit_seq = 0
         self.performance_auto = False
         self.performance_candidates = set()
         self.rgb_epoch = 0
@@ -212,13 +245,27 @@ class Controller:
                 self.learning = None
                 p = next(p for p in self.store.data['profiles'] if p['id'] == target['profile'])
                 pg = next(pg for pg in p['pages'] if pg['id'] == target['page'])
-                control = Store.bank(pg, target['bank'])[target['id']]
+                bank_controls = Store.bank(pg, target['bank'])
+                control = bank_controls[target['id']]
                 self.store.checkpoint('Learn ' + control['label'])
+                # One physical input drives one control: take it from whichever control had it.
+                moved = [
+                    cid
+                    for cid, mapping in effective_mappings(bank_controls, target['bank']).items()
+                    if cid != target['id'] and input_key(mapping) == input_key(sig)
+                ]
+                for cid in moved:
+                    bank_controls[cid]['mapping'] = None
                 control['mapping'] = sig
-                self.learned = {**target, 'seq': (self.learned or {}).get('seq', 0) + 1}
+                moved_labels = [bank_controls[cid]['label'] for cid in moved]
+                seq = (self.learned or {}).get('seq', 0) + 1
+                self.learned = {**target, 'seq': seq, 'moved': moved_labels}
                 self.store.persist()
                 self._changed()
-                self.event('learn', {'message': control['label'] + ' learned from ' + port})
+                message = control['label'] + ' learned from ' + port
+                if moved_labels:
+                    message += '; ' + ', '.join(moved_labels) + ' no longer responds to it'
+                self.event('learn', {'message': message})
                 return
             current = self.store.current()
             bank = current['activeBank']
@@ -230,9 +277,14 @@ class Controller:
                     self.previous.clear()
                     self._changed()
             controls = copy.deepcopy(self.store.controls(bank=bank))
-        for cid, cfg in controls.items():
-            if not matches(cfg['mapping'], sig, self.primary):
+        for cid, mapping in effective_mappings(controls, bank).items():
+            if not matches(mapping, sig, self.primary):
                 continue
+            cfg = controls[cid]
+            if cid.startswith('knob') or is_press(data):
+                # Shown briefly on the canvas, also while paused, so mappings are easy to check.
+                self.hit_seq += 1
+                self.hits.append({'id': cid, 'bank': bank, 'page': current['activePage'], 'seq': self.hit_seq})
             key = (current['id'], current['activePage'], bank, cid)
             value = data[2] if len(data) > 2 else data[1]
             if cid.startswith('knob'):
@@ -249,8 +301,7 @@ class Controller:
         if cfg['action'] == 'none':
             return
         if data is not None:
-            high = data[0] & 0xF0
-            press = not (high == 0x80 or high in [0x90, 0xB0] and (data[2] if len(data) > 2 else 0) == 0)
+            press = is_press(data)
             if cfg['trigger'] in ['press', 'pressOnly'] and not press and not cid.startswith('knob'):
                 return
             if cfg['trigger'] == 'releaseOnly' and press:
@@ -396,6 +447,8 @@ class Controller:
                                 self.performance_candidates.add(candidate['name'])
                             except Exception as exc:
                                 self.event('device', {'message': 'Additional input unavailable: ' + str(exc)})
+                    self._connect_failures = 0
+                    self._retry_at = 0
                     self.event('device', {'message': 'Connected performance input ' + inp['name']})
                 elif command == 'read':
                     self._live_restore()
@@ -413,6 +466,9 @@ class Controller:
             except Exception as exc:
                 if command == 'connect':
                     self.connection = {'state': 'error', 'message': str(exc)}
+                    # Retry automatic connections less and less often (a busy port, MidiSuite open).
+                    self._connect_failures += 1
+                    self._retry_at = time.monotonic() + min(30, 2**self._connect_failures)
                 self.event(
                     'rgb' if command in ['read', 'apply', 'identify', 'save'] else 'error',
                     {'state': 'error', 'message': str(exc)},
@@ -511,6 +567,11 @@ class Controller:
         """Notice an unplugged controller, and queue a reconnect once it is back."""
         self.available = ports()
         names = [p['name'] for p in self.available['inputs']]
+        smc = tuple(sorted(name for name in names if any(device in name.lower() for device in DEVICE_NAMES)))
+        if smc != self._smc_ports:
+            # The controller appeared or changed ports: try again right away.
+            self._smc_ports = smc
+            self._retry_at = 0
         if self.primary and self.primary not in names:
             self.rgb.cancel.set()
             self.rgb.ready = False
@@ -524,13 +585,16 @@ class Controller:
             not self.primary
             # An empty dict means "auto discover" and must still reconnect.
             and self._reconnect is not None
-            and any(device in name.lower() for name in names for device in DEVICE_NAMES)
+            and self.store.data['settings']['autoConnect']
+            and smc
+            and time.monotonic() >= self._retry_at
             and self.device_queue.empty()
         ):
             self.device_queue.put_nowait(('connect', self._reconnect))
 
     def _poll(self):
-        tick = 0
+        # With automatic connection armed, check USB on the first tick so launch connects quickly.
+        tick = 3 if self._reconnect is not None else 0
         while not self.stop.wait(0.5):
             tick += 1
             try:
@@ -601,6 +665,8 @@ class Controller:
                     'canUndo': bool(self.store.undo),
                     'learning': self.learning,
                     'learned': self.learned,
+                    'hits': list(self.hits),
+                    'factoryNotes': {bank: 4 + group * 16 for bank, group in NOTE_GROUP.items()},
                     'midi': self.last_midi,
                     'calibration': copy.deepcopy(self.calibration),
                     'logs': list(self.logs)[-70:],
@@ -821,6 +887,8 @@ class Controller:
                                 raise ValueError('Invalid live color')
                             changes['liveColor'] = str(data['liveColor'])
                         self.store.data['settings'].update(changes)
+                        if changes.get('autoConnect') and self._reconnect is None:
+                            self._reconnect = {}
                 except Exception:
                     # Roll a rejected edit back completely; it must not leave an Undo step either.
                     if label:

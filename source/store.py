@@ -211,6 +211,7 @@ def settings(value):
     value['masterVolume'] = number(value.get('masterVolume'), 100, 0, 100)
     for key in ['autoProfiles', 'reducedMotion', 'liveFeedback']:
         value[key] = bool(value.get(key, False))
+    value['autoConnect'] = bool(value.get('autoConnect', True))
     value['hardwarePreset'] = int(number(value.get('hardwarePreset'), 0, 0, 7))
     import re
 

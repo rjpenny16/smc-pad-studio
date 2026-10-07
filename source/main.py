@@ -74,7 +74,8 @@ def main():
         from System import Action
 
         logging.info('SMC-PAD Studio %s', VERSION)
-        controller = Controller(ROOT)
+        # UI checks stay deterministic: they connect only when a hardware flag asks for it.
+        controller = Controller(ROOT, auto_connect='--ui-check' not in sys.argv)
         base = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
         html = ui_bundle.load(base / 'ui')
         window = webview.create_window(

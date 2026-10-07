@@ -85,11 +85,12 @@ const current = () => store.profiles.find((p) => p.id === store.activeProfile),
 const context = () => ({ profile: current().id, page: current().activePage, bank: current().activeBank, id: selected });
 const label = (type) => ACTIONS.find((a) => a[0] === type)?.[1] || type;
 const sameControl = (a, b) => !!a && !!b && ['profile', 'page', 'bank', 'id'].every((key) => a[key] === b[key]);
-// The saved configuration of a control anywhere in the store, or undefined.
-function storedControl(where) {
+// The saved controls of one bank ({profile, page, bank}) anywhere in the store.
+function bankControls(where) {
   const p = store?.profiles.find((x) => x.id === where.profile);
-  return p?.pages.find((x) => x.id === where.page)?.banks[where.bank]?.[where.id];
+  return p?.pages.find((x) => x.id === where.page)?.banks[where.bank] || {};
 }
+const storedControl = (where) => bankControls(where)[where.id];
 const describeMapping = (m) => `${m.kind} ${m.data1}, channel ${m.channel + 1}`;
 // A readable name for a control id: pad3 -> Pad 3.
 function controlTitle(id) {
@@ -139,9 +140,16 @@ async function refresh() {
     }
     if (learned) {
       const control = storedControl(learned);
-      if (control?.mapping) toast(control.label + ' learned: ' + describeMapping(control.mapping));
+      if (control?.mapping)
+        toast(
+          control.label +
+            ' learned: ' +
+            describeMapping(control.mapping) +
+            (learned.moved?.length ? ' (moved from ' + learned.moved.join(', ') + ')' : ''),
+        );
     }
     renderLive(previous);
+    renderHits(previous);
     renderDownload();
     updatePlayheads();
   } catch (e) {
@@ -181,6 +189,7 @@ function renderStore() {
   $('profileName').value = p.name;
   $('profileApps').value = (p.apps || []).join(', ');
   $('autoProfiles').checked = store.settings.autoProfiles;
+  $('autoConnect').checked = store.settings.autoConnect !== false;
   $('reducedMotion').checked = store.settings.reducedMotion;
   document.body.classList.toggle('reduced-motion', store.settings.reducedMotion);
   renderBoard();
@@ -388,12 +397,35 @@ function renderFields() {
     }[action] || 'Value';
   renderEditorCrop();
 }
+// The factory MIDI input of a pad (see midi.default_mapping), or null.
+function factoryMapping(bank, id) {
+  const base = state?.factoryNotes?.[bank];
+  const note = /^pad\d+$/.test(id) && base != null ? base + Number(id.slice(3)) - 1 : 128;
+  return note <= 127 ? { kind: 'note', channel: 9, data1: note, port: '' } : null;
+}
+const sameInput = (a, b) => a.kind === b.kind && a.channel === b.channel && a.data1 === b.data1;
 function renderMapping() {
   if (!draft) return;
   let m = draft.mapping;
-  $('mappingInfo').textContent = m
-    ? `${m.kind} · channel ${m.channel + 1} · number ${m.data1}\n${m.port || 'Primary performance input'}`
-    : 'No physical control assigned';
+  const fallback = factoryMapping(target.bank, target.id);
+  $('clearLearn').textContent = fallback ? 'Use default' : 'Clear';
+  $('clearLearn').disabled = !m;
+  if (m) {
+    $('mappingInfo').textContent =
+      `${m.kind} · channel ${m.channel + 1} · number ${m.data1}\n${m.port || 'Primary performance input'}`;
+    return;
+  }
+  if (!fallback) {
+    $('mappingInfo').textContent = 'No physical control assigned';
+    return;
+  }
+  // Mirrors controller.effective_mappings: a learned control elsewhere in the bank takes the factory input.
+  const owner = Object.entries(bankControls(target)).find(
+    ([cid, cfg]) => cid !== target.id && cfg.mapping && sameInput(cfg.mapping, fallback),
+  );
+  $('mappingInfo').textContent = owner
+    ? `Not assigned: note ${fallback.data1} is learned by ${owner[1].label}`
+    : `Factory default · note ${fallback.data1} · channel 10\nLearn to use a different control`;
 }
 function renderSteps() {
   if (!draft) return;
@@ -576,6 +608,27 @@ function renderOnChange(element, data, html) {
 }
 // Library files are stored as <32 hex characters>-<original name>.
 const clipName = (name) => String(name).replace(/^[0-9a-f]{32}-/, '');
+// Briefly highlight controls the hardware just pressed or turned (state.hits, newest last).
+let lastHit = 0;
+function renderHits(previous) {
+  const hits = state.hits || [];
+  const newest = hits.at(-1)?.seq ?? lastHit;
+  if (!previous || !store) {
+    lastHit = newest;
+    return;
+  }
+  for (const hit of hits) {
+    if (hit.seq <= lastHit || hit.bank !== current().activeBank || hit.page !== current().activePage) continue;
+    const el = document.querySelector(`[data-id="${hit.id}"]`);
+    if (!el) continue;
+    el.classList.remove('hit');
+    void el.offsetWidth; // restart the animation for repeated presses
+    el.classList.add('hit');
+    clearTimeout(el.hitTimer);
+    el.hitTimer = setTimeout(() => el.classList.remove('hit'), 450);
+  }
+  lastHit = Math.max(lastHit, newest);
+}
 function renderPlayingPads() {
   if (!state) return;
   let playing = new Set(state.audio.players.map((p) => p.control));
@@ -1315,7 +1368,7 @@ $('librarySearch').oninput = renderLibrary;
 $('masterVolume').oninput = () => ($('masterValue').textContent = $('masterVolume').value + '%');
 $('masterVolume').onchange = () => safe(() => mutate('masterVolume', { volume: Number($('masterVolume').value) }));
 $('liveColor').onchange = () => safe(() => mutate('settings', { liveColor: $('liveColor').value }));
-for (const id of ['autoProfiles', 'reducedMotion', 'liveFeedback'])
+for (const id of ['autoConnect', 'autoProfiles', 'reducedMotion', 'liveFeedback'])
   $(id).onchange = () => safe(() => mutate('settings', { [id]: $(id).checked }));
 $('quitApp').onclick = () => safe(() => call('quit'));
 function diagnostics() {

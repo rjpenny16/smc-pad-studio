@@ -1339,3 +1339,21 @@ body.reduced-motion * {
   transition: none !important;
   animation: none !important;
 }
+
+/* A control the hardware just pressed or turned. Reduced motion keeps the outline without the fade. */
+.pad.hit,
+.side-control.hit,
+.knob-control.hit .dial {
+  box-shadow:
+    0 0 0 2px var(--accent),
+    0 0 18px color-mix(in srgb, var(--color, var(--accent)) 55%, transparent);
+  animation: hit-fade 0.45s ease-out;
+}
+@keyframes hit-fade {
+  from {
+    filter: brightness(1.4);
+  }
+  to {
+    filter: none;
+  }
+}

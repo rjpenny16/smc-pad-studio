@@ -15,8 +15,8 @@ import wave
 import zipfile
 
 from store import Store, validate_control, validate_profile, preset_locator
-from midi import RGB, encode, decode, bank_for_note
-from controller import Controller, matches, signature, delta, VERSION
+from midi import RGB, encode, decode, bank_for_note, default_mapping
+from controller import Controller, matches, signature, delta, effective_mappings, VERSION
 from audio import Audio
 import actions
 import media
@@ -599,6 +599,7 @@ class RegressionTests(unittest.TestCase):
     def test_auto_discovered_connection_reconnects_after_replug(self):
         with tempfile.TemporaryDirectory() as folder:
             controller = Controller(folder, FakeTransport())
+            controller._check_usb = lambda: None  # park the background check; the test drives it
             try:
                 plugged = {'inputs': [{'id': 0, 'name': 'SMC-PAD'}], 'outputs': []}
                 # "Auto discover" connections are stored as an empty dict, which must still reconnect.
@@ -606,18 +607,18 @@ class RegressionTests(unittest.TestCase):
                 controller.primary = ''
                 with patch('controller.ports', return_value=plugged):
                     with patch.object(controller.device_queue, 'put_nowait') as put:
-                        controller._check_usb()
+                        Controller._check_usb(controller)
                 put.assert_called_once_with(('connect', {}))
                 # An explicit Disconnect stays disconnected.
                 controller._reconnect = None
                 with patch('controller.ports', return_value=plugged):
                     with patch.object(controller.device_queue, 'put_nowait') as put:
-                        controller._check_usb()
+                        Controller._check_usb(controller)
                 put.assert_not_called()
                 # Unplugging is noticed and reported.
                 controller.primary = 'SMC-PAD'
                 with patch('controller.ports', return_value={'inputs': [], 'outputs': []}):
-                    controller._check_usb()
+                    Controller._check_usb(controller)
                 self.assertEqual((controller.primary, controller.connection['state']), ('', 'disconnected'))
             finally:
                 controller.close()
@@ -676,6 +677,139 @@ class RegressionTests(unittest.TestCase):
                 self.assertEqual(controller.store.controls()['pad2']['mapping']['data1'], 37)
                 self.assertEqual(controller.store.undo[-1][0], 'Learn Pad 2')
                 self.assertEqual(snapshot['logs'][-1]['message'], 'Pad 2 learned from SMC-PAD')
+            finally:
+                controller.close()
+
+    def test_unlearned_pads_respond_to_factory_notes(self):
+        self.assertEqual(default_mapping('A', 'pad1')['data1'], 36)
+        self.assertEqual(default_mapping('B', 'pad16')['data1'], 67)
+        self.assertEqual(default_mapping('G', 'pad1')['data1'], 4)
+        self.assertIsNone(default_mapping('F', 'pad13'))  # beyond note 127
+        self.assertIsNone(default_mapping('A', 'knob1'))
+        for bank in 'ABCDEFGH':
+            for pad in range(1, 17):
+                mapping = default_mapping(bank, f'pad{pad}')
+                if mapping:
+                    self.assertEqual(bank_for_note(mapping['data1']), bank)
+        with tempfile.TemporaryDirectory() as folder:
+            controller = Controller(folder, FakeTransport())
+            calls = []
+            controller._perform = lambda req: calls.append(req['value'])
+            try:
+                controller.primary = 'SMC-PAD'
+                controls = controller.store.controls()
+                controls['pad1'] = validate_control('pad1', {'action': 'typeText', 'value': 'factory'})
+                controller.on_midi('SMC-PAD', [0x99, 36, 100])
+                time.sleep(0.05)
+                self.assertEqual(calls, ['factory'])
+                # Pad 5 learned note 37 (Pad 2's factory note), so Pad 2 must not fire as well.
+                learned = {'kind': 'note', 'channel': 9, 'data1': 37, 'port': ''}
+                controls['pad5'] = validate_control(
+                    'pad5', {'action': 'typeText', 'value': 'learned', 'mapping': learned}
+                )
+                controls['pad2'] = validate_control('pad2', {'action': 'typeText', 'value': 'factory 2'})
+                self.assertNotIn('pad2', effective_mappings(controls, 'A'))
+                controller.on_midi('SMC-PAD', [0x99, 37, 100])
+                time.sleep(0.05)
+                self.assertEqual(calls, ['factory', 'learned'])
+                # Bank B pads follow PAD BANK notes 52-67.
+                controller.store.controls(bank='B')['pad1'] = validate_control(
+                    'pad1', {'action': 'typeText', 'value': 'bank b'}
+                )
+                controller.on_midi('SMC-PAD', [0x99, 52, 100])
+                time.sleep(0.05)
+                self.assertEqual(calls[-1], 'bank b')
+                # Another device's port does not reach the factory mappings.
+                controller.on_midi('Other keyboard', [0x99, 36, 100])
+                time.sleep(0.05)
+                self.assertEqual(len(calls), 3)
+            finally:
+                controller.close()
+
+    def test_learning_moves_an_input_instead_of_duplicating_it(self):
+        with tempfile.TemporaryDirectory() as folder:
+            controller = Controller(folder, FakeTransport())
+            try:
+                controller.primary = 'SMC-PAD'
+                controls = controller.store.controls()
+                controls['pad5'] = validate_control(
+                    'pad5', {'label': 'Kick', 'mapping': {'kind': 'note', 'channel': 9, 'data1': 70, 'port': ''}}
+                )
+                controller.request('learn', {'id': 'pad2'})
+                controller.on_midi('SMC-PAD', [0x99, 70, 100])
+                self.assertEqual(controls['pad2']['mapping']['data1'], 70)
+                self.assertIsNone(controls['pad5']['mapping'])
+                self.assertEqual(controller.learned['moved'], ['Kick'])
+                # Learning another pad's factory note takes it from that pad, too.
+                controller.request('learn', {'id': 'pad3'})
+                controller.on_midi('SMC-PAD', [0x99, 36, 100])
+                self.assertEqual(controller.learned['moved'], ['Pad 1'])
+                self.assertNotIn('pad1', effective_mappings(controls, 'A'))
+            finally:
+                controller.close()
+
+    def test_pressed_controls_are_reported_for_the_canvas(self):
+        with tempfile.TemporaryDirectory() as folder:
+            controller = Controller(folder, FakeTransport())
+            try:
+                controller.primary = 'SMC-PAD'
+                controller.request('pause', {'paused': True})
+                controller.on_midi('SMC-PAD', [0x99, 36, 100])
+                controller.on_midi('SMC-PAD', [0x89, 36, 0])  # release: no new highlight
+                hits = controller.request('snapshot', {})['value']['hits']
+                self.assertEqual([(h['id'], h['bank'], h['seq']) for h in hits], [('pad1', 'A', 1)])
+                self.assertEqual(hits[0]['page'], controller.store.current()['activePage'])
+                self.assertEqual(controller.request('snapshot', {})['value']['factoryNotes']['B'], 52)
+            finally:
+                controller.close()
+
+    def test_pad_bank_switch_on_the_controller_is_not_a_warning(self):
+        transport = FakeTransport()
+        events = []
+        rgb = RGB(transport, lambda kind, data: events.append(data))
+        rgb.port = 0
+        rgb.header = bytes(transport.header)
+        transport.header[11] = 1
+        rgb.last_activity = 0
+        rgb.keep_alive()
+        self.assertEqual(events[-1], {'state': 'available', 'message': 'PAD BANK switched to Bank B'})
+        self.assertFalse(rgb.ready)
+        transport.header[10] = 3
+        rgb.last_activity = 0
+        rgb.keep_alive()
+        self.assertEqual(events[-1], {'state': 'available'})
+
+    def test_auto_connect_at_launch_with_backoff(self):
+        with tempfile.TemporaryDirectory() as folder:
+            plugged = {'inputs': [{'id': 0, 'name': 'SMC-PAD'}], 'outputs': []}
+            controller = Controller(folder, FakeTransport(), auto_connect=True)
+            controller._check_usb = lambda: None  # park the background check; the test drives it
+            try:
+                self.assertEqual(controller._reconnect, {})
+                controller._retry_at = time.monotonic() + 60  # a recent attempt failed
+                controller._smc_ports = ('SMC-PAD',)
+                with patch('controller.ports', return_value=plugged):
+                    with patch.object(controller.device_queue, 'put_nowait') as put:
+                        Controller._check_usb(controller)
+                put.assert_not_called()
+                # Replugging (the port list changes) retries at once.
+                controller._smc_ports = ()
+                with patch('controller.ports', return_value=plugged):
+                    with patch.object(controller.device_queue, 'put_nowait') as put:
+                        Controller._check_usb(controller)
+                put.assert_called_once()
+                # Turning the setting off stops automatic connection attempts.
+                controller.request('settings', {'autoConnect': False})
+                controller._smc_ports = ()
+                with patch('controller.ports', return_value=plugged):
+                    with patch.object(controller.device_queue, 'put_nowait') as put:
+                        Controller._check_usb(controller)
+                put.assert_not_called()
+            finally:
+                controller.close()
+            controller = Controller(folder, FakeTransport(), auto_connect=True)
+            try:
+                self.assertIsNone(controller._reconnect)  # the saved setting is respected at launch
             finally:
                 controller.close()
 
