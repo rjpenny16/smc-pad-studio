@@ -61,7 +61,15 @@ const COLORS = [
   '#38bdf8',
   '#818cf8',
 ];
-const SIDE_NAMES = ['BT', 'Pad Bank', 'Knob Bank', 'Left', 'Right', 'Play', 'Stop', 'Record', 'Shift', 'Repeat'];
+const SIDE_NAMES = ['BT', 'Pad bank', 'Knob bank', 'Left', 'Right', 'Play', 'Stop', 'Record', 'Shift', 'Repeat'];
+// Title and one-line description shown in the top bar for each view.
+const VIEWS = {
+  studio: ['Studio', 'Choose a pad, knob or button to change what it does.'],
+  soundboard: ['Soundboard', 'Your clips, quick previews and the live mixer.'],
+  profiles: ['Profiles & pages', 'A profile for each app, with pages of actions inside it.'],
+  device: ['Device', 'Connection, pad lighting and troubleshooting.'],
+  settings: ['Settings', 'How Studio starts, connects and behaves.'],
+};
 const waves = new Map(),
   croppers = new Set();
 let editorCrop = null,
@@ -225,6 +233,7 @@ function renderBoard() {
       $('knobs').append(button);
     } else {
       button.textContent = cfg.label.startsWith('Button ') ? SIDE_NAMES[Number(cid.slice(4)) - 1] : cfg.label;
+      button.title = button.textContent;
       $('sideBtns').append(button);
     }
     button.onclick = (e) => {
@@ -310,8 +319,8 @@ function loadEditor() {
   $('dirtyBadge').classList.add('hidden');
   $('selectedName').textContent = draft.label;
   $('selectedType').textContent =
-    (selected.startsWith('pad') ? 'PAD' : selected.startsWith('knob') ? 'ENCODER' : 'BUTTON') +
-    ' · BANK ' +
+    (selected.startsWith('pad') ? 'Pad' : selected.startsWith('knob') ? 'Encoder' : 'Button') +
+    ' · Bank ' +
     target.bank;
   $('selectedSwatch').style.setProperty('--color', draft.color);
   for (const [id, key] of [
@@ -430,11 +439,13 @@ function renderMapping() {
   );
   $('mappingInfo').textContent = owner
     ? `Not assigned: note ${fallback.data1} is learned by ${owner[1].label}`
-    : `Factory default · note ${fallback.data1} · channel 10\nLearn to use a different control`;
+    : `Factory default\nnote ${fallback.data1} · channel 10\nLearn to use a different control`;
 }
 function renderSteps() {
   if (!draft) return;
   $('steps').replaceChildren();
+  if (!draft.steps.length)
+    $('steps').innerHTML = '<p class="helper">No steps yet. Add a step to build a sequence of actions.</p>';
   for (const [index, step] of draft.steps.entries()) {
     let el = document.createElement('div');
     el.className = 'step';
@@ -510,16 +521,18 @@ function renderLive(previous) {
       ? 'Connection needs attention'
       : 'Not connected';
   $('connectBtn').querySelector('span').textContent = connected ? 'Reconnect' : 'Connect device';
-  $('canvasStatus').textContent = connected ? 'LIVE MIDI' : 'OFFLINE EDITING';
+  // The only primary button in the top bar, and only while there is something to do.
+  $('connectBtn').classList.toggle('primary', !connected);
+  $('canvasStatus').textContent = connected ? 'Live' : 'Offline';
   $('canvasStatus').className = 'tag' + (connected ? ' good' : '');
-  $('deviceStatusTag').textContent = state.connection.state.toUpperCase();
+  $('deviceStatusTag').textContent = state.connection.state[0].toUpperCase() + state.connection.state.slice(1);
   $('deviceStatusTag').className = 'tag' + (connected ? ' good' : ' warn');
   $('deviceMessage').textContent = state.connection.message;
   $('pauseBtn').querySelector('span').textContent = state.paused ? 'Resume mappings' : 'Pause mappings';
   $('pauseBtn').classList.toggle('danger', state.paused);
   $('footerStatus').textContent = state.paused ? 'Mappings paused — audio remains available' : state.connection.message;
   $('audioCount').textContent = state.audio.players.length + ' clip' + (state.audio.players.length === 1 ? '' : 's');
-  $('playingCount').textContent = state.audio.players.length + ' PLAYING';
+  $('playingCount').textContent = state.audio.players.length + ' playing';
   if (state.midi) {
     $('lastMidiValue').textContent = state.midi.kind.toUpperCase() + ' ' + state.midi.value;
     $('lastMidiPort').textContent = state.midi.port + ' · Ch ' + state.midi.channel;
@@ -573,7 +586,7 @@ function renderLive(previous) {
       .join(''),
   );
   $('healthInfo').textContent =
-    `MIDI: ${state.connection.state}. RGB: ${rgb.state}. Dropped MIDI events: ${state.droppedMidi}. Audio: ${state.audio.error || 'ready on demand'}.`;
+    `MIDI: ${state.connection.state}. Pad colors: ${$('rgbStatus').textContent.toLowerCase()}. Dropped MIDI messages: ${state.droppedMidi}. Audio: ${state.audio.error || 'ready'}.`;
   renderPlayingPads();
   renderMixer();
   renderColorState();
@@ -600,7 +613,7 @@ function renderLive(previous) {
       )
       .join(''),
   );
-  $('diagnosticCount').textContent = state.logs.length + ' EVENTS';
+  $('diagnosticCount').textContent = state.logs.length + (state.logs.length === 1 ? ' event' : ' events');
   if (previous?.rgb?.state !== rgb.state && rgb.state === 'partial')
     toast('Some pad colors were not applied. See Device for individual results.', true);
 }
@@ -652,10 +665,10 @@ function renderPlayingPads() {
     if (cfg)
       el.querySelector('.pad-type').textContent = playing.has(el.dataset.id)
         ? cfg.loop
-          ? 'LOOPING'
-          : 'PLAYING'
+          ? 'Looping'
+          : 'Playing'
         : cfg.action === 'none'
-          ? 'UNASSIGNED'
+          ? 'Unassigned'
           : label(cfg.action);
   }
 }
@@ -687,7 +700,7 @@ function renderMixer() {
   for (const p of players) {
     const row = list.querySelector(`[data-player="${CSS.escape(p.id)}"]`);
     if (!row) continue;
-    row.querySelector('[data-loop]').textContent = p.loop ? 'LOOP' : 'PLAYING';
+    row.querySelector('[data-loop]').textContent = p.loop ? 'Loop' : 'Playing';
     row.querySelector('[data-progress]').style.width = position(p) + '%';
     row.querySelector('[data-time]').textContent = `${p.position.toFixed(1)} / ${p.end.toFixed(1)} seconds`;
     const gain = row.querySelector('[data-gain]');
@@ -708,9 +721,9 @@ function renderPorts() {
     );
   }
   $('portList').innerHTML =
-    '<h3>INPUTS</h3>' +
+    '<h3>Inputs</h3>' +
     state.ports.inputs.map((p) => esc(p.id + ' · ' + p.name)).join('<br>') +
-    '<hr class="section-rule"><h3>OUTPUTS</h3>' +
+    '<hr class="section-rule"><h3>Outputs</h3>' +
     state.ports.outputs.map((p) => esc(p.id + ' · ' + p.name)).join('<br>');
 }
 async function showView(next) {
@@ -720,7 +733,8 @@ async function showView(next) {
     $('view-' + name).classList.toggle('hidden', name !== view);
   for (let button of document.querySelectorAll('[data-view]'))
     button.classList.toggle('active', button.dataset.view === view);
-  $('breadcrumb').textContent = view[0].toUpperCase() + view.slice(1);
+  $('viewTitle').textContent = VIEWS[view][0];
+  $('viewDescription').textContent = VIEWS[view][1];
   if (view === 'soundboard') await loadLibrary();
 }
 async function loadLibrary() {
@@ -730,7 +744,7 @@ async function loadLibrary() {
 function renderLibrary() {
   let query = $('librarySearch').value.toLowerCase();
   let list = library.filter((c) => c.name.toLowerCase().includes(query));
-  $('libraryCount').textContent = library.length + ' CLIPS';
+  $('libraryCount').textContent = library.length + (library.length === 1 ? ' clip' : ' clips');
   $('libraryList').innerHTML = list.length
     ? list
         .map(
@@ -738,7 +752,10 @@ function renderLibrary() {
             `<article class="clip${chosenClip?.path === c.path ? ' selected' : ''}" data-clip="${esc(c.path)}"><div class="clip-icon">${icon('audio')}</div><div class="grow" style="flex:1;min-width:0"><div class="clip-name">${esc(c.name)}</div><div class="clip-details">${(c.size / 1048576).toFixed(1)} MB · ${c.duration ? c.duration.toFixed(1) + ' seconds' : 'Ready to preview'}</div></div><button class="btn ghost tiny" data-preview aria-label="Preview ${esc(c.name)}">${icon('play')}</button><button class="btn tiny" data-select>Details</button></article>`,
         )
         .join('')
-    : `<div class="panel empty">${icon('audio')}<p>${query ? 'No clips match your search.' : 'Import a clip to build your soundboard.'}</p></div>`;
+    : `<div class="panel empty">${icon('audio')}<p>${query ? 'No clips match your search.' : 'No clips yet. Import audio files, or paste a YouTube link above.'}</p>${query ? '' : `<button class="btn" data-empty-import>${icon('plus')}Import clips</button>`}</div>`;
+  $('libraryList')
+    .querySelector('[data-empty-import]')
+    ?.addEventListener('click', () => $('importClips').click());
   for (let el of $('libraryList').querySelectorAll('[data-clip]')) {
     let clip = list.find((c) => c.path === el.dataset.clip);
     el.querySelector('[data-preview]').onclick = () => safe(() => call('previewAudio', { path: clip.path }));
@@ -788,11 +805,16 @@ function renderClipDetail() {
 function renderProfiles() {
   if (!store) return;
   let query = $('profileSearch').value.toLowerCase();
-  $('profilesGrid').innerHTML = store.profiles
-    .filter((p) => p.name.toLowerCase().includes(query))
+  const shown = store.profiles.filter((p) => p.name.toLowerCase().includes(query));
+  if (!shown.length) {
+    $('profilesGrid').innerHTML =
+      `<div class="panel empty">${icon('search')}<p>No profiles match your search.</p></div>`;
+    return;
+  }
+  $('profilesGrid').innerHTML = shown
     .map(
       (p) =>
-        `<article class="profile-card${p.id === store.activeProfile ? ' active' : ''}"><div class="row"><svg style="color:var(--accent)"><use href="#i-layers"/></svg><div class="spacer"></div><span class="tag${p.id === store.activeProfile ? ' good' : ''}">${p.id === store.activeProfile ? 'ACTIVE' : 'PROFILE'}</span></div><h2>${esc(p.name)}</h2><p class="muted">${p.pages.length} page${p.pages.length === 1 ? '' : 's'} · Banks A–H</p><div class="profile-colors">${Object.values(
+        `<article class="profile-card${p.id === store.activeProfile ? ' active' : ''}"><div class="row"><svg style="color:var(--accent)"><use href="#i-layers"/></svg><div class="spacer"></div><span class="tag${p.id === store.activeProfile ? ' good' : ''}">${p.id === store.activeProfile ? 'Active' : 'Profile'}</span></div><h2>${esc(p.name)}</h2><p class="muted">${p.pages.length} page${p.pages.length === 1 ? '' : 's'}</p><div class="profile-colors">${Object.values(
           p.pages[0].banks.A,
         )
           .slice(0, 8)

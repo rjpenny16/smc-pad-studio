@@ -10,6 +10,20 @@
   --danger: #f28a96;
   --gold: #d9bd83;
   --radius: 14px;
+  /* Type scale: nothing in the interface is smaller than --fs-xs. */
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-base: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  /* Spacing scale. */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
 }
 * {
   box-sizing: border-box;
@@ -106,14 +120,14 @@ button svg {
 }
 .brand small {
   display: block;
-  font-size: 10px;
-  letter-spacing: 2px;
+  font-size: var(--fs-xs);
+  letter-spacing: 1.6px;
   color: var(--muted);
 }
 .rail-label {
-  font-size: 10px;
-  letter-spacing: 1.8px;
-  color: #656f80;
+  font-size: var(--fs-xs);
+  letter-spacing: 0.3px;
+  color: var(--muted);
   margin: 0 12px 8px;
 }
 .nav {
@@ -182,8 +196,8 @@ button svg {
   box-shadow: 0 0 10px #72d4d440;
 }
 .version {
-  font-size: 10px;
-  color: #6f798b;
+  font-size: var(--fs-xs);
+  color: var(--muted);
   display: flex;
   justify-content: space-between;
   padding: 0 8px;
@@ -195,7 +209,7 @@ button svg {
   overflow: hidden;
 }
 .topbar {
-  height: 76px;
+  min-height: 68px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -204,13 +218,20 @@ button svg {
   border-bottom: 1px solid var(--line);
   gap: 14px;
 }
-.breadcrumb {
-  font-size: 12px;
-  color: var(--muted);
+/* The view title and a one-line description replace the large per-view headers. */
+.view-heading {
+  min-width: 0;
 }
-.breadcrumb strong {
-  font-weight: 500;
-  color: var(--text);
+.view-heading h1 {
+  margin: 0;
+}
+.view-heading p {
+  margin: 2px 0 0;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .top-actions {
   display: flex;
@@ -264,25 +285,11 @@ button svg {
   padding: 25px 28px 36px;
   scrollbar-color: #394151 transparent;
 }
-.heading {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 20px;
-  margin-bottom: 22px;
-}
-.eyebrow {
-  font-size: 10px;
-  color: var(--accent);
-  letter-spacing: 1.8px;
-  text-transform: uppercase;
-  margin-bottom: 7px;
-}
 h1 {
-  font-size: 27px;
+  font-size: var(--fs-xl);
   line-height: 1.2;
   font-weight: 600;
-  letter-spacing: -0.8px;
+  letter-spacing: -0.3px;
   margin: 0 0 6px;
 }
 h2 {
@@ -351,7 +358,7 @@ textarea {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 10px;
+  font-size: var(--fs-xs);
   padding: 4px 8px;
   border: 1px solid var(--line);
   border-radius: 5px;
@@ -409,14 +416,14 @@ textarea {
 .board-brand {
   display: flex;
   justify-content: space-between;
-  font-size: 9px;
-  letter-spacing: 2px;
+  font-size: var(--fs-xs);
+  letter-spacing: 1.6px;
   color: #8792a5;
   margin-bottom: 22px;
 }
 .hardware {
   display: grid;
-  grid-template-columns: 120px minmax(0, 1fr) 48px;
+  grid-template-columns: 120px minmax(0, 1fr) 72px;
   gap: 19px;
 }
 .knob-grid {
@@ -476,9 +483,9 @@ textarea {
 }
 .knob-control span {
   color: #8b97aa;
-  font-size: 9px;
+  font-size: var(--fs-xs);
   text-align: center;
-  max-width: 58px;
+  max-width: 64px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -522,7 +529,7 @@ textarea {
   border-radius: 3px;
 }
 .pad .pad-number {
-  font-size: 9px;
+  font-size: var(--fs-xs);
   color: color-mix(in srgb, var(--color) 70%, white);
   letter-spacing: 0.7px;
 }
@@ -535,10 +542,12 @@ textarea {
   text-overflow: ellipsis;
 }
 .pad .pad-type {
-  font-size: 8px;
-  color: #7e899b;
-  text-transform: uppercase;
-  letter-spacing: 0.7px;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .pad:hover {
   transform: translateY(-2px);
@@ -567,10 +576,12 @@ textarea {
   background: #242a34;
   border: 1px solid #384150;
   border-radius: 4px;
-  padding: 3px 0;
-  font-size: 7px;
+  padding: 3px 4px;
+  font-size: var(--fs-xs);
   color: #96a0b3;
   overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .side-control.selected {
   border-color: var(--accent);
@@ -582,7 +593,7 @@ textarea {
   justify-content: space-between;
   padding: 0 20px 18px;
   gap: 10px;
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: var(--muted);
 }
 .board-caption span {
@@ -628,12 +639,12 @@ textarea {
 }
 .info-card label {
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   display: block;
 }
 .info-card small {
-  font-size: 10px;
-  color: #748196;
+  font-size: var(--fs-xs);
+  color: var(--muted);
 }
 .inspector .panel-head {
   background: #191d25;
@@ -657,8 +668,7 @@ textarea {
   margin-bottom: 13px;
 }
 .field > label {
-  font-size: 10px;
-  letter-spacing: 0.3px;
+  font-size: var(--fs-sm);
   color: #9da7b8;
   display: block;
   margin-bottom: 6px;
@@ -714,8 +724,9 @@ textarea {
   margin: 17px 0;
 }
 .map-info {
+  white-space: pre-line;
   font:
-    10px/1.6 Consolas,
+    11px/1.6 Consolas,
     monospace;
   color: #8ea7bc;
   padding: 9px;
@@ -754,7 +765,7 @@ textarea {
   color: var(--text);
 }
 .helper {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   line-height: 1.5;
   color: var(--muted);
   margin-top: 5px;
@@ -799,11 +810,14 @@ textarea {
   color: var(--muted);
   font-size: 12px;
 }
-.empty svg {
+.empty > svg {
   width: 32px;
   height: 32px;
   color: #556375;
   margin-bottom: 12px;
+}
+.empty .btn {
+  margin-top: var(--sp-3);
 }
 .library-layout {
   display: grid;
@@ -843,7 +857,7 @@ textarea {
   white-space: nowrap;
 }
 .clip-details {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: var(--muted);
   margin-top: 3px;
 }
@@ -1089,13 +1103,13 @@ textarea {
   justify-content: space-between;
   align-items: center;
   padding: 0 24px;
-  font-size: 10px;
-  color: #7e8da3;
+  font-size: var(--fs-xs);
+  color: var(--muted);
   gap: 8px;
   background: #11141a;
 }
 .statusbar button {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   background: none;
   border: 0;
   color: #8fa3ba;
@@ -1166,7 +1180,7 @@ textarea {
   font-size: 18px;
 }
 .performance .pad-type {
-  font-size: 10px;
+  font-size: var(--fs-sm);
 }
 .performance .board {
   max-width: 1050px;
@@ -1204,7 +1218,7 @@ textarea {
     padding: 16px;
   }
   .hardware {
-    grid-template-columns: 100px minmax(0, 1fr) 38px;
+    grid-template-columns: 100px minmax(0, 1fr) 64px;
     gap: 12px;
   }
   .pad-grid {
@@ -1212,9 +1226,6 @@ textarea {
   }
   .pad {
     padding: 7px;
-  }
-  .pad-name {
-    font-size: 10px;
   }
   .dial {
     width: 38px;
@@ -1264,14 +1275,8 @@ textarea {
   .library-layout {
     grid-template-columns: minmax(0, 1fr) 275px;
   }
-  .topbar {
-    height: 65px;
-  }
-  .heading h1 {
-    font-size: 24px;
-  }
   .hardware {
-    grid-template-columns: 90px minmax(0, 1fr) 32px;
+    grid-template-columns: 90px minmax(0, 1fr) 56px;
   }
   .pad {
     aspect-ratio: 0.95;
@@ -1305,13 +1310,10 @@ textarea {
     margin: 16px;
   }
   .hardware {
-    grid-template-columns: 100px minmax(0, 1fr) 40px;
+    grid-template-columns: 100px minmax(0, 1fr) 60px;
   }
   .pad {
     aspect-ratio: 1.2;
-  }
-  .heading {
-    align-items: center;
   }
   .toolbar {
     gap: 6px;
@@ -1322,8 +1324,8 @@ textarea {
   .diagnostics {
     height: 250px;
   }
-  .breadcrumb {
-    font-size: 11px;
+  .view-heading p {
+    display: none;
   }
   .content {
     padding: 20px 16px;
@@ -1356,4 +1358,12 @@ body.reduced-motion * {
   to {
     filter: none;
   }
+}
+
+/* A small caption inside a toolbar or segmented control ("Bank", "Pad lighting"). */
+.segmented-label {
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  align-self: center;
+  padding: 0 6px;
 }
