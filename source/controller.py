@@ -39,6 +39,7 @@ KNOBS = {
     'tabKnob': ('previousTab', 'nextTab'),
     'windowKnob': ('previousWindow', 'nextWindow'),
     'desktopKnob': ('desktopLeft', 'desktopRight'),
+    'pageKnob': ('previousPage', 'nextPage'),
 }
 
 
@@ -334,6 +335,8 @@ class Controller:
             self.event('error', {'message': 'Action queue is full. Pause mappings and try again.'})
 
     def _perform(self, req):
+        if req['type'] in ['nextPage', 'previousPage']:
+            return self._step_page(1 if req['type'] == 'nextPage' else -1)
         if req['type'] == 'playAudio':
             return self.audio.command('play', req)
         if req['type'] == 'stopAudio':
@@ -341,6 +344,23 @@ class Controller:
         if req['type'] == 'url' and not str(req['value']).lower().startswith(('https://', 'http://')):
             raise ValueError('Websites must use http or https')
         return actions.action(req)
+
+    def _step_page(self, step):
+        """Move to the next or previous page of the active profile, wrapping around."""
+        with self.lock, self.store.lock:
+            p = self.store.current()
+            if len(p['pages']) < 2:
+                self.event(
+                    'profile', {'message': 'This profile has one page; add pages in Studio to switch between them'}
+                )
+                return
+            ids = [pg['id'] for pg in p['pages']]
+            p['activePage'] = ids[(ids.index(p['activePage']) + step) % len(ids)]
+            self.previous.clear()
+            self.store.persist()
+            self._changed()
+            name = next(pg['name'] for pg in p['pages'] if pg['id'] == p['activePage'])
+        self.event('profile', {'message': 'Page: ' + name})
 
     def _actions(self):
         while not self.stop.is_set():
@@ -620,6 +640,8 @@ class Controller:
             return 'Save ' + str((data.get('control') or {}).get('label') or data['id'])
         if command == 'deleteProfile':
             return 'Delete ' + p['name']
+        if command == 'deletePage':
+            return 'Delete ' + next(pg['name'] for pg in p['pages'] if pg['id'] == p['activePage'])
         if command == 'updateProfile':
             return 'Profile settings' if 'name' in data or 'apps' in data else None
         return EDITS.get(command)
@@ -810,6 +832,7 @@ class Controller:
             'newPage',
             'switchPage',
             'renamePage',
+            'deletePage',
             'settings',
         ]:
             with self.lock, self.store.lock:
@@ -877,6 +900,12 @@ class Controller:
                         p['activeBank'] = data.get('bank', p['activeBank'])
                     elif command == 'renamePage':
                         next(pg for pg in p['pages'] if pg['id'] == p['activePage'])['name'] = str(data['name'])[:60]
+                    elif command == 'deletePage':
+                        if len(p['pages']) == 1:
+                            raise ValueError('Keep at least one page')
+                        index = [pg['id'] for pg in p['pages']].index(p['activePage'])
+                        p['pages'].pop(index)
+                        p['activePage'] = p['pages'][max(0, index - 1)]['id']
                     elif command == 'settings':
                         # Validate everything first so a bad value changes nothing.
                         changes = {k: bool(v) for k, v in data.items() if k in SETTING_SWITCHES}

@@ -11,6 +11,8 @@ const ACTIONS = [
   ['playAudio', 'Play an audio clip', 'Audio'],
   ['stopAudio', 'Stop all audio', 'Audio'],
   ['macro', 'Multi-step macro', 'Automation'],
+  ['nextPage', 'Next page', 'Pages'],
+  ['previousPage', 'Previous page', 'Pages'],
   ['launch', 'Launch app or file', 'Apps & input'],
   ['url', 'Open a website', 'Apps & input'],
   ['shortcut', 'Keyboard shortcut', 'Apps & input'],
@@ -24,6 +26,7 @@ const ACTIONS = [
   ['desktopKnob', 'Virtual desktops', 'Knob controls'],
   ['arrowKnob', 'Left / right arrows', 'Knob controls'],
   ['twoWayShortcutKnob', 'Custom two-way shortcuts', 'Knob controls'],
+  ['pageKnob', 'Switch pages', 'Knob controls'],
   ['mediaPlayPause', 'Play / pause media', 'Media'],
   ['mediaNext', 'Next track', 'Media'],
   ['mediaPrevious', 'Previous track', 'Media'],
@@ -188,6 +191,7 @@ function renderStore() {
   $('pinBtn').innerHTML = icon('pin') + '<span>' + (store.pinned ? 'Pinned' : 'Auto') + '</span>';
   $('profileName').value = p.name;
   $('profileApps').value = (p.apps || []).join(', ');
+  $('deletePage').disabled = p.pages.length < 2;
   $('autoProfiles').checked = store.settings.autoProfiles;
   $('autoConnect').checked = store.settings.autoConnect !== false;
   $('reducedMotion').checked = store.settings.reducedMotion;
@@ -1308,6 +1312,23 @@ $('renamePage').onclick = () =>
   safe(async () => {
     let name = await nameDialog('Rename page', page().name);
     if (name) await mutate('renamePage', { name });
+  });
+$('deletePage').onclick = () =>
+  safe(async () => {
+    if (!(await allowSelection())) return;
+    const name = page().name;
+    const confirmed = await modal(
+      'Delete page?',
+      `<p class="muted">Delete ${esc(name)} and all of its banks? You can restore it with Undo.</p>`,
+      [
+        { label: 'Keep page', value: null },
+        { label: 'Delete page', value: true },
+      ],
+    );
+    if (!confirmed) return;
+    await mutate('deletePage');
+    loadEditor();
+    toast(name + ' deleted');
   });
 $('newProfile').onclick = () =>
   safe(async () => {

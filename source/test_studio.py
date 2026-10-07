@@ -813,6 +813,53 @@ class RegressionTests(unittest.TestCase):
             finally:
                 controller.close()
 
+    def test_controller_switches_pages(self):
+        with tempfile.TemporaryDirectory() as folder:
+            controller = Controller(folder, FakeTransport())
+            try:
+                first = controller.store.current()['activePage']
+                controller.request('newPage', {'name': 'Creative'})
+                controller.request('newPage', {'name': 'Meetings'})
+                pages = [pg['id'] for pg in controller.store.current()['pages']]
+
+                def active():
+                    return controller.store.current()['activePage']
+
+                controller._perform({'type': 'nextPage'})
+                self.assertEqual(active(), first)  # wraps around
+                controller._perform({'type': 'previousPage'})
+                self.assertEqual(active(), pages[2])
+                self.assertEqual(controller.logs[-1]['message'], 'Page: Meetings')
+                # A knob turns pages through the action queue.
+                knob = validate_control('knob1', {'action': 'pageKnob'})
+                controller._trigger('knob1', knob, change=-1)
+                deadline = time.monotonic() + 2
+                while active() != pages[1] and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertEqual(active(), pages[1])
+                # Pages are navigation: switching leaves nothing extra to undo.
+                self.assertEqual([label for label, _ in controller.store.undo], ['New page', 'New page'])
+                validate_control('pad1', {'action': 'macro', 'steps': [{'type': 'nextPage'}]})
+                with self.assertRaises(ValueError):
+                    validate_control('pad1', {'action': 'macro', 'steps': [{'type': 'pageKnob'}]})
+            finally:
+                controller.close()
+
+    def test_delete_page_keeps_at_least_one(self):
+        with tempfile.TemporaryDirectory() as folder:
+            controller = Controller(folder, FakeTransport())
+            try:
+                self.assertFalse(controller.request('deletePage')['ok'])
+                first = controller.store.current()['activePage']
+                controller.request('newPage', {'name': 'Creative'})
+                self.assertTrue(controller.request('deletePage')['ok'])
+                profile = controller.store.current()
+                self.assertEqual(([pg['id'] for pg in profile['pages']], profile['activePage']), ([first], first))
+                self.assertEqual(controller.request('undo')['value'], 'Delete Creative')
+                self.assertEqual(len(controller.store.current()['pages']), 2)
+            finally:
+                controller.close()
+
     def test_build_script_reads_the_version(self):
         # build.ps1 names the EXE from controller.VERSION with this regular expression.
         script = (Path(__file__).parent / 'build.ps1').read_text(encoding='utf8')

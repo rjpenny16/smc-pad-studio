@@ -31,6 +31,9 @@ COLORS = [
 IDS = [f'pad{i}' for i in range(1, 17)] + [f'knob{i}' for i in range(1, 9)] + [f'side{i}' for i in range(1, 11)]
 TYPES = {
     'none',
+    'nextPage',
+    'previousPage',
+    'pageKnob',
     'playAudio',
     'stopAudio',
     'launch',
