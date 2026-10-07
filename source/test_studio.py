@@ -3,6 +3,7 @@
 import math
 from pathlib import Path
 import queue
+import re
 import shutil
 import struct
 import tempfile
@@ -15,7 +16,7 @@ import zipfile
 
 from store import Store, validate_control, validate_profile, preset_locator
 from midi import RGB, encode, decode, bank_for_note
-from controller import Controller, matches, signature, delta
+from controller import Controller, matches, signature, delta, VERSION
 from audio import Audio
 import actions
 import media
@@ -677,6 +678,13 @@ class RegressionTests(unittest.TestCase):
                 self.assertEqual(snapshot['logs'][-1]['message'], 'Pad 2 learned from SMC-PAD')
             finally:
                 controller.close()
+
+    def test_build_script_reads_the_version(self):
+        # build.ps1 names the EXE from controller.VERSION with this regular expression.
+        script = (Path(__file__).parent / 'build.ps1').read_text(encoding='utf8')
+        pattern = re.search(r'-Pattern "([^"]+)"', script).group(1)
+        source = (Path(__file__).parent / 'controller.py').read_text(encoding='utf8')
+        self.assertEqual([m.group(1) for line in source.splitlines() if (m := re.match(pattern, line))], [VERSION])
 
     def test_ui_bundle_inlines_interface_assets(self):
         html = ui_bundle.load(Path(__file__).parent / 'ui')
