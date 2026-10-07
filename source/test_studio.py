@@ -595,6 +595,89 @@ class RegressionTests(unittest.TestCase):
             finally:
                 controller.close()
 
+    def test_auto_discovered_connection_reconnects_after_replug(self):
+        with tempfile.TemporaryDirectory() as folder:
+            controller = Controller(folder, FakeTransport())
+            try:
+                plugged = {'inputs': [{'id': 0, 'name': 'SMC-PAD'}], 'outputs': []}
+                # "Auto discover" connections are stored as an empty dict, which must still reconnect.
+                controller._reconnect = {}
+                controller.primary = ''
+                with patch('controller.ports', return_value=plugged):
+                    with patch.object(controller.device_queue, 'put_nowait') as put:
+                        controller._check_usb()
+                put.assert_called_once_with(('connect', {}))
+                # An explicit Disconnect stays disconnected.
+                controller._reconnect = None
+                with patch('controller.ports', return_value=plugged):
+                    with patch.object(controller.device_queue, 'put_nowait') as put:
+                        controller._check_usb()
+                put.assert_not_called()
+                # Unplugging is noticed and reported.
+                controller.primary = 'SMC-PAD'
+                with patch('controller.ports', return_value={'inputs': [], 'outputs': []}):
+                    controller._check_usb()
+                self.assertEqual((controller.primary, controller.connection['state']), ('', 'disconnected'))
+            finally:
+                controller.close()
+
+    def test_profile_updates_change_only_what_was_sent(self):
+        with tempfile.TemporaryDirectory() as folder:
+            controller = Controller(folder, FakeTransport())
+            try:
+                self.assertTrue(
+                    controller.request('updateProfile', {'name': 'Work', 'apps': 'Code.exe, chrome.exe'})['ok']
+                )
+                # The Pin button sends only `pinned`; the app rules and name must survive it.
+                self.assertTrue(controller.request('updateProfile', {'pinned': False})['ok'])
+                profile = controller.store.current()
+                self.assertEqual((profile['name'], profile['apps']), ('Work', ['code.exe', 'chrome.exe']))
+                self.assertFalse(controller.store.data['pinned'])
+                # Pinning is a mode switch, not an edit Undo should step through.
+                self.assertEqual(controller.store.undo[-1][0], 'Profile settings')
+                self.assertEqual(len(controller.store.undo), 1)
+            finally:
+                controller.close()
+
+    def test_undo_reverts_edits_but_not_navigation_or_settings(self):
+        with tempfile.TemporaryDirectory() as folder:
+            controller = Controller(folder, FakeTransport())
+            try:
+                control = {**controller.store.controls()['pad3'], 'label': 'Airhorn'}
+                controller.request('saveControl', {'id': 'pad3', 'control': control})
+                controller.request('switchPage', {'bank': 'B'})
+                controller.request('settings', {'reducedMotion': True})
+                self.assertTrue(controller.request('snapshot', {})['value']['canUndo'])
+                self.assertEqual(controller.request('undo')['value'], 'Save Airhorn')
+                self.assertEqual(controller.store.controls(bank='A')['pad3']['label'], 'Pad 3')
+                # The settings change made after the edit is kept.
+                self.assertTrue(controller.store.data['settings']['reducedMotion'])
+                self.assertIsNone(controller.request('undo')['value'])
+                self.assertFalse(controller.request('snapshot', {})['value']['canUndo'])
+                # A rejected edit leaves no Undo step and no partial change.
+                self.assertFalse(controller.request('deleteProfile')['ok'])
+                self.assertEqual(controller.store.undo, [])
+                self.assertFalse(controller.request('settings', {'liveFeedback': True, 'liveColor': 'red'})['ok'])
+                self.assertFalse(controller.store.data['settings']['liveFeedback'])
+            finally:
+                controller.close()
+
+    def test_learning_publishes_the_learned_control(self):
+        with tempfile.TemporaryDirectory() as folder:
+            controller = Controller(folder, FakeTransport())
+            try:
+                controller.primary = 'SMC-PAD'
+                self.assertTrue(controller.request('learn', {'id': 'pad2'})['ok'])
+                controller.on_midi('SMC-PAD', [0x99, 37, 100])
+                snapshot = controller.request('snapshot', {})['value']
+                self.assertIsNone(snapshot['learning'])
+                self.assertEqual((snapshot['learned']['id'], snapshot['learned']['seq']), ('pad2', 1))
+                self.assertEqual(controller.store.controls()['pad2']['mapping']['data1'], 37)
+                self.assertEqual(controller.store.undo[-1][0], 'Learn Pad 2')
+                self.assertEqual(snapshot['logs'][-1]['message'], 'Pad 2 learned from SMC-PAD')
+            finally:
+                controller.close()
+
     def test_ui_bundle_inlines_interface_assets(self):
         html = ui_bundle.load(Path(__file__).parent / 'ui')
         self.assertNotIn('href="studio.css"', html)

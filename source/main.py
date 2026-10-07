@@ -56,7 +56,7 @@ def main():
             format='%(asctime)s %(levelname)s %(message)s',
             force=True,
         )
-        logging.info('Starting SMC-PAD Studio 0.8.0 pid=%s', os.getpid())
+        logging.info('Starting SMC-PAD Studio pid=%s', os.getpid())
         instance_suffix = '.test.' + str(os.getpid()) if '--ui-check' in sys.argv else ''
         mutex = kernel.CreateMutexW(None, False, 'Local\\SMCPADStudio' + instance_suffix)
         if not mutex:
@@ -68,11 +68,12 @@ def main():
             logging.info('Existing instance restored')
             return 0
         import webview
-        from controller import Controller
+        from controller import Controller, VERSION
         import ui_bundle
         import clr  # noqa: F401  (loads the CLR so the System import below works)
         from System import Action
 
+        logging.info('SMC-PAD Studio %s', VERSION)
         controller = Controller(ROOT)
         base = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
         html = ui_bundle.load(base / 'ui')

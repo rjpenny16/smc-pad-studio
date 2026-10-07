@@ -8,6 +8,7 @@ import json
 import logging
 from pathlib import Path
 import queue
+import re
 import shutil
 import threading
 import time
@@ -16,10 +17,20 @@ import uuid
 import actions
 from audio import Audio
 import media
-from midi import Transport, RGB, ports, bank_for_note
+from midi import Transport, RGB, ports, bank_for_note, DEVICE_NAMES
 from store import Store, profile, page, validate_control, number, preset_locator, AUDIO_EXTS, BANKS
 
 VERSION = '0.8.0'
+# Boolean settings the interface may switch.
+SETTING_SWITCHES = ['autoProfiles', 'reducedMotion', 'liveFeedback']
+# Commands that edit profile content; anything else here is navigation or a preference.
+EDITS = {
+    'copyControls': 'Copy configuration',
+    'newProfile': 'New profile',
+    'duplicateProfile': 'Duplicate profile',
+    'newPage': 'New page',
+    'renamePage': 'Rename page',
+}
 KNOBS = {
     'volumeKnob': ('volumeDown', 'volumeUp'),
     'scrollKnob': ('scrollDown', 'scrollUp'),
@@ -91,12 +102,15 @@ class Controller:
     def __init__(self, root, transport=None):
         self.lock = threading.RLock()
         self.logs = deque(maxlen=300)
+        self.log_seq = 0
         self.store = Store(root)
         self.revision = 1
         self.window = None
         self.quitting = False
         self.paused = False
         self.learning = None
+        # The control most recently learned; `seq` lets the interface notice each new one.
+        self.learned = None
         self.previous = {}
         self.primary = ''
         self.connection = {'state': 'disconnected', 'message': 'Connect your SMC-PAD to begin'}
@@ -151,7 +165,13 @@ class Controller:
                 self.rgb_state.update(copy.deepcopy(data))
             message = data.get('message')
             if message or kind == 'error':
-                item = {'time': time.strftime('%H:%M:%S'), 'kind': kind, 'message': message or str(data)}
+                self.log_seq += 1
+                item = {
+                    'seq': self.log_seq,
+                    'time': time.strftime('%H:%M:%S'),
+                    'kind': kind,
+                    'message': message or str(data),
+                }
                 self.logs.append(item)
                 logging.info('%s %s', kind, item['message'])
 
@@ -192,11 +212,13 @@ class Controller:
                 self.learning = None
                 p = next(p for p in self.store.data['profiles'] if p['id'] == target['profile'])
                 pg = next(pg for pg in p['pages'] if pg['id'] == target['page'])
-                self.store.checkpoint()
-                Store.bank(pg, target['bank'])[target['id']]['mapping'] = sig
+                control = Store.bank(pg, target['bank'])[target['id']]
+                self.store.checkpoint('Learn ' + control['label'])
+                control['mapping'] = sig
+                self.learned = {**target, 'seq': (self.learned or {}).get('seq', 0) + 1}
                 self.store.persist()
                 self._changed()
-                self.event('learn', {'message': 'MIDI learned for ' + target['id'] + ' from ' + port})
+                self.event('learn', {'message': control['label'] + ' learned from ' + port})
                 return
             current = self.store.current()
             bank = current['activeBank']
@@ -338,7 +360,7 @@ class Controller:
                     candidates = [
                         p
                         for p in self.available['inputs']
-                        if any(name in p['name'].lower() for name in ['smc', 'sinco'])
+                        if any(name in p['name'].lower() for name in DEVICE_NAMES)
                         and 'private' not in p['name'].lower()
                     ]
                     candidates.sort(
@@ -485,29 +507,35 @@ class Controller:
             if self.rgb.apply({cid: color}, preset, bank, refresh=False, report=False)[0]['ok']:
                 self.live_lit.pop(key)
 
+    def _check_usb(self):
+        """Notice an unplugged controller, and queue a reconnect once it is back."""
+        self.available = ports()
+        names = [p['name'] for p in self.available['inputs']]
+        if self.primary and self.primary not in names:
+            self.rgb.cancel.set()
+            self.rgb.ready = False
+            self.connection = {
+                'state': 'disconnected',
+                'message': 'USB disconnected. Studio reconnects when the controller is plugged back in.',
+            }
+            self.primary = ''
+            self.event('device', {'message': 'USB disconnected'})
+        elif (
+            not self.primary
+            # An empty dict means "auto discover" and must still reconnect.
+            and self._reconnect is not None
+            and any(device in name.lower() for name in names for device in DEVICE_NAMES)
+            and self.device_queue.empty()
+        ):
+            self.device_queue.put_nowait(('connect', self._reconnect))
+
     def _poll(self):
         tick = 0
         while not self.stop.wait(0.5):
             tick += 1
             try:
                 if tick % 4 == 0:
-                    self.available = ports()
-                    if self.primary and self.primary not in [p['name'] for p in self.available['inputs']]:
-                        self.rgb.cancel.set()
-                        self.rgb.ready = False
-                        self.connection = {
-                            'state': 'disconnected',
-                            'message': 'USB disconnected — waiting to reconnect',
-                        }
-                        self.primary = ''
-                        self.event('device', {'message': 'USB disconnected'})
-                    elif (
-                        not self.primary
-                        and self._reconnect
-                        and any('smc' in p['name'].lower() for p in self.available['inputs'])
-                        and self.device_queue.empty()
-                    ):
-                        self.device_queue.put_nowait(('connect', self._reconnect))
+                    self._check_usb()
                 if self.store.data['settings'].get('autoProfiles') and not self.store.data.get('pinned', True):
                     app = foreground_executable()
                     if 'smc-pad' in app:
@@ -521,6 +549,16 @@ class Controller:
                         self.event('profile', {'message': 'Profile switched for ' + app})
             except Exception as exc:
                 self.event('error', {'message': 'Background check: ' + str(exc)})
+
+    def _edit_label(self, command, data, p):
+        """What Undo calls this command, or None when it is not an undoable edit."""
+        if command == 'saveControl':
+            return 'Save ' + str((data.get('control') or {}).get('label') or data['id'])
+        if command == 'deleteProfile':
+            return 'Delete ' + p['name']
+        if command == 'updateProfile':
+            return 'Profile settings' if 'name' in data or 'apps' in data else None
+        return EDITS.get(command)
 
     def _target(self, data):
         p = next(
@@ -560,7 +598,9 @@ class Controller:
                     'ports': copy.deepcopy(self.available),
                     'audio': self.audio.snapshot(),
                     'paused': self.paused,
+                    'canUndo': bool(self.store.undo),
                     'learning': self.learning,
+                    'learned': self.learned,
                     'midi': self.last_midi,
                     'calibration': copy.deepcopy(self.calibration),
                     'logs': list(self.logs)[-70:],
@@ -647,7 +687,7 @@ class Controller:
                 if self.rgb_state.get('bank') != data.get('bank', self.store.current()['activeBank']):
                     raise ValueError('Read colors from this bank first')
                 target = self._target(data)
-                self.store.checkpoint()
+                self.store.checkpoint('Use device colors')
                 for cid, color in self.rgb_state.get('colors', {}).items():
                     target[cid]['color'] = color
                 self.store.persist()
@@ -709,10 +749,18 @@ class Controller:
             with self.lock, self.store.lock:
                 p = self.store.current()
                 if command == 'undo':
-                    if self.store.undo:
-                        self.store.data = self.store.undo.pop()
-                else:
-                    self.store.checkpoint()
+                    label = self.store.restore()
+                    # The restored profile may name another bank; follow the hardware again.
+                    self.hardware_bank_marker = None
+                    self.store.persist()
+                    self.previous.clear()
+                    self.learning = None
+                    self._changed()
+                    return label
+                label = self._edit_label(command, data, p)
+                if label:
+                    self.store.checkpoint(label)
+                try:
                     if command == 'saveControl':
                         self._target(data)[data['id']] = validate_control(data['id'], data['control'])
                     elif command == 'copyControls':
@@ -741,9 +789,13 @@ class Controller:
                         self.store.data['activeProfile'] = data['id']
                         self.store.data['pinned'] = bool(data.get('pinned', True))
                     elif command == 'updateProfile':
-                        p['name'] = str(data.get('name', p['name']))[:80]
-                        p['apps'] = [a.strip().lower() for a in str(data.get('apps', '')).split(',') if a.strip()]
-                        self.store.data['pinned'] = bool(data.get('pinned', self.store.data['pinned']))
+                        # Change only what was sent: the Pin button sends just `pinned`.
+                        if 'name' in data:
+                            p['name'] = str(data['name'])[:80]
+                        if 'apps' in data:
+                            p['apps'] = [a.strip().lower() for a in str(data['apps']).split(',') if a.strip()]
+                        if 'pinned' in data:
+                            self.store.data['pinned'] = bool(data['pinned'])
                     elif command == 'newPage':
                         if len(p['pages']) >= 32:
                             raise ValueError('Maximum 32 pages reached')
@@ -760,20 +812,20 @@ class Controller:
                     elif command == 'renamePage':
                         next(pg for pg in p['pages'] if pg['id'] == p['activePage'])['name'] = str(data['name'])[:60]
                     elif command == 'settings':
-                        settings = self.store.data['settings']
-                        settings.update(
-                            {
-                                k: bool(v)
-                                for k, v in data.items()
-                                if k in ['autoProfiles', 'reducedMotion', 'liveFeedback']
-                            }
-                        )
+                        # Validate everything first so a bad value changes nothing.
+                        changes = {k: bool(v) for k, v in data.items() if k in SETTING_SWITCHES}
                         if 'hardwarePreset' in data:
-                            settings['hardwarePreset'] = int(number(data['hardwarePreset'], 0, 0, 7))
+                            changes['hardwarePreset'] = int(number(data['hardwarePreset'], 0, 0, 7))
                         if 'liveColor' in data:
-                            if not __import__('re').fullmatch(r'#[0-9a-fA-F]{6}', str(data['liveColor'])):
+                            if not re.fullmatch(r'#[0-9a-fA-F]{6}', str(data['liveColor'])):
                                 raise ValueError('Invalid live color')
-                            settings['liveColor'] = str(data['liveColor'])
+                            changes['liveColor'] = str(data['liveColor'])
+                        self.store.data['settings'].update(changes)
+                except Exception:
+                    # Roll a rejected edit back completely; it must not leave an Undo step either.
+                    if label:
+                        self.store.data = self.store.undo.pop()[1]
+                    raise
                 self.store.persist()
                 self.previous.clear()
                 self.learning = None
@@ -922,8 +974,8 @@ class Controller:
             clip = media.youtube_mp3(url, self.store.root / 'Audio', progress, cancel)
             if assign is not None:
                 with self.lock, self.store.lock:
-                    self.store.checkpoint()
                     control = self._target(assign)[assign['id']]
+                    self.store.checkpoint('Assign ' + clip['name'] + ' to ' + control['label'])
                     control.update(
                         action='playAudio', value=clip['path'], audioName=clip['name'], trimStart=0, trimEnd=0
                     )

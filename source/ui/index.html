@@ -87,12 +87,12 @@
           <button class="btn ghost" id="diagnosticsBtn">
             <svg><use href="#i-more" /></svg><span>Diagnostics</span>
           </button>
-          <div class="version"><span>LOCAL & PRIVATE</span><span>v0.7.0</span></div>
+          <div class="version"><span>LOCAL & PRIVATE</span><span id="appVersion"></span></div>
         </div>
       </aside>
       <div class="workspace">
         <header class="topbar">
-          <div class="breadcrumb">Control Center <span>/</span><strong id="breadcrumb">Studio</strong></div>
+          <div class="breadcrumb"><strong id="breadcrumb">Studio</strong></div>
           <div class="top-actions">
             <button class="btn ghost" id="undoBtn" title="Undo last configuration edit">
               <svg><use href="#i-undo" /></svg><span>Undo</span></button
@@ -188,7 +188,7 @@
                     <small id="activePageLabel">Page 1 · Bank A</small>
                   </div>
                   <div class="info-card">
-                    <label>AUDIO ENGINE</label>
+                    <label>NOW PLAYING</label>
                     <div class="metric" id="audioCount">0 clips</div>
                     <small>Windows default output</small>
                   </div>
@@ -625,8 +625,8 @@
                     <label for="liveColor">Playing color</label><input id="liveColor" type="color" />
                   </div>
                   <p class="helper">
-                    Uses the hardware preset chosen on the Device page. The pad returns to its stored color when
-                    playback stops. Temporary colors are never saved to the device.
+                    Uses the preset the controller is on right now. Each pad returns to its stored color when playback
+                    stops. Temporary colors are never saved to the device.
                   </p>
                   <hr class="section-rule" />
                   <h3>Background behavior</h3>
@@ -654,7 +654,7 @@
                     1, Bank A; learn Bank B separately.
                   </p>
                   <hr class="section-rule" />
-                  <h3>SMC-PAD Studio 0.7.0</h3>
+                  <h3 id="aboutVersion">SMC-PAD Studio</h3>
                   <p class="helper">Windows x64 · Native MIDI · Windows media engine · Default audio output</p>
                 </div>
               </div>

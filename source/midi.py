@@ -7,6 +7,8 @@ import threading
 import time
 
 UINT_PTR = C.c_size_t
+# Substrings that identify SMC-PAD MIDI endpoints in Windows port names.
+DEVICE_NAMES = ('smc', 'sinco')
 
 
 class InCaps(C.Structure):
@@ -334,8 +336,8 @@ class RGB:
             self.ready = False
             self.flash = None
             self.header = None
-            ins = [p for p in available['inputs'] if any(x in p['name'].lower() for x in ['smc', 'sinco'])]
-            outs = [p for p in available['outputs'] if any(x in p['name'].lower() for x in ['smc', 'sinco'])]
+            ins = [p for p in available['inputs'] if any(x in p['name'].lower() for x in DEVICE_NAMES)]
+            outs = [p for p in available['outputs'] if any(x in p['name'].lower() for x in DEVICE_NAMES)]
             if input_id is not None and output_id is not None:
                 pairs = [
                     (

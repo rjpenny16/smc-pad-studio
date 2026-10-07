@@ -309,9 +309,24 @@ class Store:
                 shutil.copy2(self.path, self.path.with_suffix('.json.bak'))
             os.replace(temp, self.path)
 
-    def checkpoint(self):
-        self.undo.append(copy.deepcopy(self.data))
+    def checkpoint(self, label):
+        """Remember the state before an edit; `label` names the edit for Undo."""
+        self.undo.append((label, copy.deepcopy(self.data)))
         self.undo = self.undo[-30:]
+
+    def restore(self):
+        """Undo the most recent edit and return its label (None when there is nothing to undo).
+
+        Only profile content and the active profile go back. Settings and the pin
+        state stay as they are now, because Undo is for edits, not preferences or
+        state that follows the hardware."""
+        if not self.undo:
+            return None
+        label, data = self.undo.pop()
+        data['settings'] = self.data['settings']
+        data['pinned'] = self.data['pinned']
+        self.data = data
+        return label
 
     def current(self):
         return next(p for p in self.data['profiles'] if p['id'] == self.data['activeProfile'])
@@ -363,7 +378,7 @@ class Store:
             p = validate_profile(json.loads(path.read_text(encoding='utf8')))
         p['id'] = uuid.uuid4().hex
         with self.lock:
-            self.checkpoint()
+            self.checkpoint('Import ' + p['name'])
             self.data['profiles'].append(p)
             self.data['activeProfile'] = p['id']
             self.persist()

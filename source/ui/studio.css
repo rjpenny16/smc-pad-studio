@@ -211,7 +211,6 @@ button svg {
 .breadcrumb strong {
   font-weight: 500;
   color: var(--text);
-  margin-left: 9px;
 }
 .top-actions {
   display: flex;

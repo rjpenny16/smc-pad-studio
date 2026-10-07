@@ -84,6 +84,19 @@ const current = () => store.profiles.find((p) => p.id === store.activeProfile),
   controls = () => page().banks[current().activeBank];
 const context = () => ({ profile: current().id, page: current().activePage, bank: current().activeBank, id: selected });
 const label = (type) => ACTIONS.find((a) => a[0] === type)?.[1] || type;
+const sameControl = (a, b) => !!a && !!b && ['profile', 'page', 'bank', 'id'].every((key) => a[key] === b[key]);
+// The saved configuration of a control anywhere in the store, or undefined.
+function storedControl(where) {
+  const p = store?.profiles.find((x) => x.id === where.profile);
+  return p?.pages.find((x) => x.id === where.page)?.banks[where.bank]?.[where.id];
+}
+const describeMapping = (m) => `${m.kind} ${m.data1}, channel ${m.channel + 1}`;
+// A readable name for a control id: pad3 -> Pad 3.
+function controlTitle(id) {
+  const match = /^(pad|knob|side)(\d+)$/.exec(String(id));
+  if (!match) return String(id)[0].toUpperCase() + String(id).slice(1);
+  return { pad: 'Pad ', knob: 'Knob ', side: 'Button ' }[match[1]] + match[2];
+}
 async function call(command, data = {}) {
   const api = window.pywebview?.api;
   if (!api) throw Error('Native runtime is not ready');
@@ -113,10 +126,20 @@ async function refresh() {
     const snap = await call('snapshot', { revision: state?.revision });
     const previous = state;
     state = snap;
+    const learned = previous && snap.learned && snap.learned.seq !== previous.learned?.seq ? snap.learned : null;
     if (snap.store) {
       store = snap.store;
       renderStore();
       if (!dirty) loadEditor();
+      else if (learned && sameControl(learned, target)) {
+        // Keep the unsaved edits, but take the new assignment so Save does not erase it.
+        draft.mapping = clone(storedControl(target).mapping);
+        renderMapping();
+      }
+    }
+    if (learned) {
+      const control = storedControl(learned);
+      if (control?.mapping) toast(control.label + ' learned: ' + describeMapping(control.mapping));
     }
     renderLive(previous);
     renderDownload();
@@ -439,6 +462,9 @@ function renderColorState() {
 function renderLive(previous) {
   if (!state) return;
   let connected = state.connection.state === 'connected';
+  $('appVersion').textContent = 'v' + state.version;
+  $('aboutVersion').textContent = 'SMC-PAD Studio ' + state.version;
+  $('undoBtn').disabled = !state.canUndo;
   $('connectionDot').classList.toggle('on', connected);
   $('railStatus').textContent = connected
     ? 'Background MIDI active'
@@ -477,7 +503,8 @@ function renderLive(previous) {
             stale: 'Changed on device',
             saved: 'Saved to device',
           }[rgb.state] || rgb.state;
-  let asked = rgb.identified;
+  // Confirming a preset by eye is only needed when the device does not report it.
+  let asked = rgb.activePreset == null ? rgb.identified : null;
   $('identifyConfirm').classList.toggle('hidden', !asked);
   $('confirmPresetBar').classList.toggle('hidden', !asked);
   if (asked) $('identifyQuestion').textContent = 'Did all 16 pads flash white for Preset ' + (asked.preset + 1) + '?';
@@ -499,12 +526,14 @@ function renderLive(previous) {
     $(id).disabled = !connected || ['discovering', 'reading', 'writing'].includes(rgb.state);
   $('applyRGB').disabled = !connected || ['discovering', 'reading', 'writing'].includes(rgb.state);
   $('readRGB').disabled = !connected || ['discovering', 'reading', 'writing'].includes(rgb.state);
-  $('rgbResults').innerHTML = (rgb.results || [])
-    .map(
-      (r) =>
-        `<p class="helper" style="color:${r.ok ? 'var(--accent)' : 'var(--danger)'}">${esc(r.pad)} · ${r.ok ? 'Stored ' + esc(r.color) : esc(r.error)}</p>`,
-    )
-    .join('');
+  renderOnChange($('rgbResults'), rgb.results || [], (results) =>
+    results
+      .map(
+        (r) =>
+          `<p class="helper" style="color:${r.ok ? 'var(--accent)' : 'var(--danger)'}">${esc(controlTitle(r.pad))} · ${r.ok ? 'Stored ' + esc(r.color) : esc(r.error)}</p>`,
+      )
+      .join(''),
+  );
   $('healthInfo').textContent =
     `MIDI: ${state.connection.state}. RGB: ${rgb.state}. Dropped MIDI events: ${state.droppedMidi}. Audio: ${state.audio.error || 'ready on demand'}.`;
   renderPlayingPads();
@@ -523,18 +552,30 @@ function renderLive(previous) {
     window.lastPortsKey = portsKey;
     renderPorts();
   }
-  $('logs').innerHTML = state.logs
-    .slice()
-    .reverse()
-    .map(
-      (log) =>
-        `<div class="log-item ${log.kind === 'error' ? 'error' : ''}"><time>${esc(log.time)}</time><span class="kind">${esc(log.kind)}</span><span>${esc(log.message)}</span></div>`,
-    )
-    .join('');
+  renderOnChange($('logs'), state.logs.at(-1)?.seq ?? 0, () =>
+    state.logs
+      .slice()
+      .reverse()
+      .map(
+        (log) =>
+          `<div class="log-item ${log.kind === 'error' ? 'error' : ''}"><time>${esc(log.time)}</time><span class="kind">${esc(log.kind)}</span><span>${esc(log.message)}</span></div>`,
+      )
+      .join(''),
+  );
   $('diagnosticCount').textContent = state.logs.length + ' EVENTS';
   if (previous?.rgb?.state !== rgb.state && rgb.state === 'partial')
     toast('Some pad colors were not applied. See Device for individual results.', true);
 }
+// Rebuild an element only when its data changed, so clicks and hover survive the 350 ms refresh.
+function renderOnChange(element, data, html) {
+  const key = JSON.stringify(data);
+  if (element.dataset.renderKey === key) return false;
+  element.dataset.renderKey = key;
+  element.innerHTML = html(data);
+  return true;
+}
+// Library files are stored as <32 hex characters>-<original name>.
+const clipName = (name) => String(name).replace(/^[0-9a-f]{32}-/, '');
 function renderPlayingPads() {
   if (!state) return;
   let playing = new Set(state.audio.players.map((p) => p.control));
@@ -555,27 +596,36 @@ function renderMixer() {
   if (!state) return;
   if (document.activeElement !== $('masterVolume')) $('masterVolume').value = state.audio.masterVolume;
   $('masterValue').textContent = Math.round(state.audio.masterVolume) + '%';
-  let list = $('playingList');
-  if (
-    document.activeElement?.matches('[data-gain]') &&
-    list.contains(document.activeElement) &&
-    state.audio.players.length
-  )
-    return;
-  if (!state.audio.players.length) {
-    list.innerHTML = '<p class="muted">Nothing playing. Preview a clip or press an assigned pad.</p>';
-    return;
+  const list = $('playingList');
+  const players = state.audio.players;
+  const position = (p) => Math.max(0, Math.min(100, ((p.position - p.start) / (p.end - p.start)) * 100)) || 0;
+  // Rebuild only when clips start or stop; otherwise update rows in place so Stop and gain stay clickable.
+  const rebuilt = renderOnChange(
+    list,
+    players.map((p) => p.id),
+    () =>
+      players
+        .map(
+          (p) =>
+            `<div class="playing-row" data-player="${esc(p.id)}"><div class="row"><span class="clip-name grow">${esc(controlTitle(p.control))} · ${esc(clipName(p.name))}</span><span class="tag" data-loop></span><button class="btn ghost tiny" data-stop="${esc(p.control)}" aria-label="Stop ${esc(controlTitle(p.control))}">${icon('stop')}</button></div><div class="progress"><i data-progress></i></div><div class="row" style="margin-top:7px"><span class="helper grow" data-time></span><input type="range" data-gain="${esc(p.control)}" aria-label="Gain for ${esc(controlTitle(p.control))}" min="0" max="100" value="${p.volume}" style="width:110px;height:18px;padding:0;accent-color:var(--accent)"></div></div>`,
+        )
+        .join('') || '<p class="muted">Nothing playing. Preview a clip or press an assigned pad.</p>',
+  );
+  if (rebuilt) {
+    for (let b of list.querySelectorAll('[data-stop]'))
+      b.onclick = () => safe(() => call('stopClip', { control: b.dataset.stop }));
+    for (let gain of list.querySelectorAll('[data-gain]'))
+      gain.onchange = () => safe(() => call('clipGain', { control: gain.dataset.gain, volume: Number(gain.value) }));
   }
-  list.innerHTML = state.audio.players
-    .map(
-      (p) =>
-        `<div class="playing-row"><div class="row"><span class="clip-name grow">${esc(p.control)} · ${esc(p.name.split('-').slice(1).join('-') || p.name)}</span><span class="tag">${p.loop ? 'LOOP' : 'PLAYING'}</span><button class="btn ghost tiny" data-stop="${esc(p.control)}" aria-label="Stop ${esc(p.control)}">${icon('stop')}</button></div><div class="progress"><i style="width:${Math.max(0, Math.min(100, ((p.position - p.start) / (p.end - p.start)) * 100))}%"></i></div><div class="row" style="margin-top:7px"><span class="helper grow">${p.position.toFixed(1)} / ${p.end.toFixed(1)} seconds</span><input type="range" data-gain="${esc(p.control)}" aria-label="Gain for ${esc(p.control)}" min="0" max="100" value="${p.volume}" style="width:110px;height:18px;padding:0;accent-color:var(--accent)"></div></div>`,
-    )
-    .join('');
-  for (let b of list.querySelectorAll('[data-stop]'))
-    b.onclick = () => safe(() => call('stopClip', { control: b.dataset.stop }));
-  for (let gain of list.querySelectorAll('[data-gain]'))
-    gain.onchange = () => safe(() => call('clipGain', { control: gain.dataset.gain, volume: Number(gain.value) }));
+  for (const p of players) {
+    const row = list.querySelector(`[data-player="${CSS.escape(p.id)}"]`);
+    if (!row) continue;
+    row.querySelector('[data-loop]').textContent = p.loop ? 'LOOP' : 'PLAYING';
+    row.querySelector('[data-progress]').style.width = position(p) + '%';
+    row.querySelector('[data-time]').textContent = `${p.position.toFixed(1)} / ${p.end.toFixed(1)} seconds`;
+    const gain = row.querySelector('[data-gain]');
+    if (document.activeElement !== gain) gain.value = p.volume;
+  }
 }
 function renderPorts() {
   for (const [id, key] of [
@@ -636,7 +686,7 @@ function renderClipDetail() {
   if (!chosenClip) return;
   let c = chosenClip;
   $('clipDetail').innerHTML =
-    `<div class="clip-icon" style="width:52px;height:52px;margin-bottom:16px">${icon('audio')}</div><h2 style="overflow-wrap:anywhere">${esc(c.name)}</h2><p class="muted">${(c.size / 1048576).toFixed(1)} MB · Windows default output</p><div class="row" style="margin-top:16px"><button class="btn primary" id="detailPreview">${icon('play')}Preview</button><button class="btn" id="detailInspect">Details</button></div><hr class="section-rule"><div class="field"><label id="detailCropLabel">Crop · drag the handles or the highlighted part</label><div id="detailCrop" role="group" aria-labelledby="detailCropLabel"></div></div><div class="row" style="flex-wrap:wrap"><button class="btn tiny" id="previewSelection">${icon('play')}Preview selection</button><button class="btn tiny" id="saveCrop">Save as new clip</button></div><p class="helper">Assign uses only the selected part. Save as new clip writes a separate cropped file to your library.</p><hr class="section-rule"><div class="field"><label for="assignPad">Assign to a pad in this bank</label><select id="assignPad">${Array.from({ length: 16 }, (_, i) => `<option value="pad${i + 1}">Pad ${i + 1} · ${esc(controls()['pad' + (i + 1)].label)}</option>`).join('')}</select></div><button class="btn" id="assignClip">Assign clip</button><p class="helper" id="clipMetadata"></p>`;
+    `<div class="clip-icon" style="width:52px;height:52px;margin-bottom:16px">${icon('audio')}</div><h2 style="overflow-wrap:anywhere">${esc(c.name)}</h2><p class="muted">${(c.size / 1048576).toFixed(1)} MB · Windows default output</p><div class="row" style="margin-top:16px"><button class="btn primary" id="detailPreview">${icon('play')}Preview</button><button class="btn" id="detailInspect">Details</button></div><hr class="section-rule"><div class="field"><label id="detailCropLabel">Crop · drag the handles or the highlighted part</label><div id="detailCrop" role="group" aria-labelledby="detailCropLabel"></div></div><div class="row" style="flex-wrap:wrap"><button class="btn tiny" id="previewSelection">${icon('play')}Preview selection</button><button class="btn tiny" id="saveCrop">Save as new clip</button></div><p class="helper">Assign uses only the selected part. Save as new clip writes a separate cropped file to your library.</p><hr class="section-rule"><div class="field"><label for="assignPad">Assign to a pad in this bank</label><select id="assignPad">${Array.from({ length: 16 }, (_, i) => `<option value="pad${i + 1}"${selected === 'pad' + (i + 1) ? ' selected' : ''}>Pad ${i + 1} · ${esc(controls()['pad' + (i + 1)].label)}</option>`).join('')}</select></div><button class="btn" id="assignClip">Assign clip</button><p class="helper" id="clipMetadata"></p>`;
   const crop = cropper($('detailCrop'), c.path, 0, 0);
   $('detailPreview').onclick = () => safe(() => call('previewAudio', { path: c.path }));
   $('previewSelection').onclick = () =>
@@ -665,7 +715,7 @@ function renderClipDetail() {
       cfg.trimStart = crop.start;
       cfg.trimEnd = crop.trimEnd;
       await mutate('saveControl', { ...context(), id, control: cfg });
-      toast(c.name + ' assigned to ' + id);
+      toast(c.name + ' assigned to ' + cfg.label);
     });
 }
 function renderProfiles() {
@@ -749,7 +799,7 @@ async function importForEditor(paths = null) {
     await refresh();
     loadEditor();
   } else await refresh();
-  toast('Clip assigned to ' + captured.id);
+  toast('Clip assigned to ' + capturedControl.label);
 }
 async function dropFiles(event) {
   event.preventDefault();
@@ -1158,8 +1208,9 @@ $('stopAudioBtn').onclick = () => safe(() => call('stopAudio'));
 $('undoBtn').onclick = () =>
   safe(async () => {
     dirty = false;
-    await mutate('undo');
+    const undone = await mutate('undo');
     loadEditor();
+    toast(undone ? 'Undone: ' + undone : 'Nothing to undo');
   });
 $('performanceBtn').onclick = () =>
   safe(async () => {
@@ -1330,11 +1381,23 @@ window.receiveNativeDrop = async (paths) =>
     await call('saveControl', { ...captured.target, control: cfg });
     if (JSON.stringify(target) === JSON.stringify(captured.target)) dirty = false;
     await refresh();
-    toast('Clip assigned to ' + captured.target.id);
+    toast('Clip assigned to ' + cfg.label);
   });
 window.studioReady = false;
+let pollTimer = null;
+const startPolling = () => (pollTimer ??= setInterval(refresh, 350));
 window.addEventListener('pywebviewready', async () => {
   await refresh();
   window.studioReady = true;
-  setInterval(refresh, 350);
+  startPolling();
+});
+// Pause the 350 ms refresh while the window is hidden in the tray; mappings and audio keep running.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  } else if (window.studioReady) {
+    refresh();
+    startPolling();
+  }
 });
