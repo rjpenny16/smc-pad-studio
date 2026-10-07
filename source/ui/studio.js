@@ -370,6 +370,40 @@ function renderStore() {
   document.body.classList.toggle('reduced-motion', store.settings.reducedMotion);
   renderBoard();
   renderProfiles();
+  renderOnboarding();
+}
+// Get started: each step ticks by itself from what Studio sees.
+const ONBOARDING_STEPS = [
+  ['connected', 'Plug in your SMC-PAD', 'Studio connects by itself over USB.'],
+  ['pressed', 'Press a pad', 'It lights up on the canvas below.'],
+  ['action', 'Give a pad an action', 'Select a pad, choose what it does, then Save.'],
+  ['synced', 'Sync pad colors', "Send Studio's colors to the controller."],
+];
+function renderOnboarding() {
+  if (!store || !state) return;
+  const progress = store.settings.onboarding || {};
+  const done = {
+    connected: state.connection.state === 'connected',
+    pressed: !!progress.pressed,
+    action: store.profiles.some((p) =>
+      p.pages.some((pg) =>
+        Object.values(pg.banks).some((bank) => Object.values(bank).some((c) => c.action !== 'none')),
+      ),
+    ),
+    synced: !!progress.synced,
+  };
+  const count = ONBOARDING_STEPS.filter(([key]) => done[key]).length;
+  $('onboarding').classList.toggle('hidden', !!progress.dismissed);
+  $('showOnboarding').checked = !progress.dismissed;
+  $('onboardingSummary').textContent =
+    count === ONBOARDING_STEPS.length ? 'All set. Your SMC-PAD is ready to play.' : count + ' of 4 done';
+  $('hideOnboarding').textContent = count === ONBOARDING_STEPS.length ? 'Done' : 'Hide';
+  renderOnChange($('onboardingSteps'), done, () =>
+    ONBOARDING_STEPS.map(
+      ([key, title, hint]) =>
+        `<li class="${done[key] ? 'done' : ''}"><span class="step-check">${done[key] ? icon('check') : ''}</span><div><strong>${esc(title)}</strong><small>${esc(done[key] ? 'Done' : hint)}</small></div></li>`,
+    ).join(''),
+  );
 }
 // Banks C-H are for controllers that send other note ranges, so they show only when wanted or in use.
 function bankVisible(p, b) {
@@ -952,6 +986,7 @@ function renderLive(previous) {
   $('undoBtn').disabled = !state.canUndo;
   renderAutostart();
   renderBanner();
+  renderOnboarding();
   $('connectionDot').classList.toggle('on', connected);
   $('railStatus').textContent = connected
     ? 'Background MIDI active'
@@ -2158,6 +2193,13 @@ $('liveColor').onchange = () => safe(() => mutate('settings', { liveColor: $('li
 for (const id of ['autoConnect', 'autoProfiles', 'reducedMotion', 'liveFeedback', 'extraBanks', 'saveOnSync'])
   $(id).onchange = () => safe(() => mutate('settings', { [id]: $(id).checked }));
 $('quitApp').onclick = () => safe(() => call('quit'));
+$('hideOnboarding').onclick = () =>
+  safe(async () => {
+    const finished = $('hideOnboarding').textContent === 'Done';
+    await mutate('onboarding', { dismissed: true });
+    if (!finished) toast('Get started is hidden. Turn it back on in Settings.');
+  });
+$('showOnboarding').onchange = () => safe(() => mutate('onboarding', { dismissed: !$('showOnboarding').checked }));
 $('startWithWindows').onchange = () =>
   safe(async () => {
     try {

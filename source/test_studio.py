@@ -1019,6 +1019,7 @@ class RegressionTests(unittest.TestCase):
                 transport.memory[0x418:0x41B] = bytes.fromhex(pads['pad1']['color'][1:])
                 results = sync('saved', saved=True, failed=0)
                 self.assertEqual([r['pad'] for r in results], [f'pad{i}' for i in range(1, 17)])
+                self.assertTrue(controller.store.data['settings']['onboarding']['synced'])
                 self.assertTrue(all(r['ok'] for r in results))
                 self.assertEqual((writes(), transport.saves), (15, 1))
                 for i in range(16):
@@ -1138,6 +1139,33 @@ class RegressionTests(unittest.TestCase):
             path.write_bytes(b'RIFF')
             desktop.recycle(path)
             self.assertFalse(path.exists())
+
+    def test_getting_started_ticks_off_steps_and_skips_existing_setups(self):
+        with tempfile.TemporaryDirectory() as folder:
+            controller = Controller(folder, FakeTransport())
+            controller._check_usb = lambda: None  # park the background check; it would clear primary
+            try:
+                progress = controller.store.data['settings']['onboarding']
+                self.assertEqual(progress, {'pressed': False, 'synced': False, 'dismissed': False})
+                controller.primary = 'SMC-PAD'
+                revision = controller.revision
+                controller.on_midi('SMC-PAD', [0x99, 36, 100])  # Pad 1's factory note
+                self.assertTrue(progress['pressed'])
+                self.assertGreater(controller.revision, revision)
+                self.assertTrue(controller.request('onboarding', {'dismissed': True})['ok'])
+                self.assertEqual(controller.store.undo, [])
+            finally:
+                controller.close()
+            self.assertEqual(
+                Store(folder).data['settings']['onboarding'], {'pressed': True, 'synced': False, 'dismissed': True}
+            )
+        # Pads set up before Getting started existed: the checklist stays hidden.
+        with tempfile.TemporaryDirectory() as folder:
+            store = Store(folder)
+            store.controls()['pad1']['action'] = 'mediaNext'
+            del store.data['settings']['onboarding']
+            store.persist()
+            self.assertTrue(Store(folder).data['settings']['onboarding']['dismissed'])
 
     def test_editor_sections_are_remembered_without_an_undo_step(self):
         with tempfile.TemporaryDirectory() as folder:

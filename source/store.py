@@ -239,7 +239,14 @@ def settings(value):
     value['presetSamples'] = preset_samples(value.get('presetSamples'))
     value['window'] = window_size(value.get('window'))
     value['editorSections'] = editor_sections(value.get('editorSections'))
+    value['onboarding'] = onboarding(value.get('onboarding'))
     return value
+
+
+def onboarding(value):
+    """Getting started progress: a pad was pressed, colors were synced, the checklist was hidden."""
+    value = value if isinstance(value, dict) else {}
+    return {key: bool(value.get(key, False)) for key in ('pressed', 'synced', 'dismissed')}
 
 
 EDITOR_SECTIONS = ('action', 'light', 'physical')
@@ -329,7 +336,17 @@ class Store:
                         raise ValueError('No profiles')
                     if data['activeProfile'] not in [p['id'] for p in data['profiles']]:
                         data['activeProfile'] = data['profiles'][0]['id']
-                    data['settings'] = settings(data.get('settings'))
+                    raw = data.get('settings') if isinstance(data.get('settings'), dict) else {}
+                    data['settings'] = settings(raw)
+                    # People who set up pads before Getting started existed do not need the checklist.
+                    if 'onboarding' not in raw and any(
+                        c['action'] != 'none'
+                        for p in data['profiles']
+                        for pg in p['pages']
+                        for controls in pg['banks'].values()
+                        for c in controls.values()
+                    ):
+                        data['settings']['onboarding']['dismissed'] = True
                     data['pinned'] = bool(data.get('pinned', True))
                     self.data = data
                     self.recovered = candidate != self.path

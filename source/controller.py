@@ -241,6 +241,15 @@ class Controller:
     def _changed(self):
         self.revision += 1
 
+    def _onboarding(self, step):
+        """Tick a Getting started step the person has now done; it is saved once."""
+        with self.lock, self.store.lock:
+            progress = self.store.data['settings']['onboarding']
+            if not progress[step]:
+                progress[step] = True
+                self.store.persist()
+                self._changed()
+
     def _missing_clips(self):
         """Controls in the active bank whose clip file is gone (removed, or moved outside Studio)."""
         return sorted(
@@ -355,6 +364,8 @@ class Controller:
                 with self.lock:
                     self.hit_seq += 1
                     self.hits.append({'id': cid, 'bank': bank, 'page': current['activePage'], 'seq': self.hit_seq})
+                if not self.store.data['settings']['onboarding']['pressed']:
+                    self._onboarding('pressed')
             key = (current['id'], current['activePage'], bank, cid)
             value = data[2] if len(data) > 2 else data[1]
             if cid.startswith('knob'):
@@ -557,6 +568,8 @@ class Controller:
                         self.rgb.save()
                     outcome['saved'] = saved
                     outcome['failed'] = sum(not r['ok'] for r in results)
+                    if not outcome['failed']:
+                        self._onboarding('synced')
                 elif command == 'identify':
                     self._live_restore()
                     self.rgb.identify(data['preset'], data['bank'])
@@ -805,6 +818,13 @@ class Controller:
         if command == 'refresh':
             self.available = ports()
             return self.available
+        if command == 'onboarding':
+            # Showing or hiding Getting started is not an edit: no Undo step.
+            with self.lock, self.store.lock:
+                self.store.data['settings']['onboarding']['dismissed'] = bool(data.get('dismissed'))
+                self.store.persist()
+                self._changed()
+            return True
         if command == 'editorSections':
             # Remembered layout like the window size: no Undo step, no refresh, and Learn keeps waiting.
             with self.lock, self.store.lock:

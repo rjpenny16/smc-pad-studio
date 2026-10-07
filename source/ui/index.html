@@ -149,6 +149,16 @@
                 <svg><use href="#i-play" /></svg>Performance
               </button>
             </div>
+            <div class="panel onboarding hidden" id="onboarding">
+              <div class="onboarding-head">
+                <div>
+                  <h3>Get started</h3>
+                  <p class="muted" id="onboardingSummary">Four steps to a working SMC-PAD.</p>
+                </div>
+                <button class="btn ghost tiny" id="hideOnboarding">Hide</button>
+              </div>
+              <ol class="steps-list" id="onboardingSteps"></ol>
+            </div>
             <div class="studio-layout">
               <div>
                 <div class="panel">
@@ -716,6 +726,10 @@
               <div class="panel">
                 <div class="panel-head"><h3 style="margin: 0">Behavior & accessibility</h3></div>
                 <div class="panel-body">
+                  <label class="check"
+                    ><input type="checkbox" id="showOnboarding" />Show the Get started checklist in Studio</label
+                  >
+                  <hr class="section-rule" />
                   <label class="check"
                     ><input type="checkbox" id="autoConnect" />Connect automatically when the controller is plugged
                     in</label
