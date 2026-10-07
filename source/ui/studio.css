@@ -1534,24 +1534,92 @@ textarea {
   color: #8fa3ba;
   padding: 3px;
 }
-.toast {
+/* Messages stack at the bottom center, newest last, clear of the editor's Save bar. */
+.toasts {
   position: fixed;
-  right: 24px;
+  left: 50%;
   bottom: 48px;
-  max-width: 440px;
+  transform: translateX(-50%);
+  z-index: 60;
+  display: grid;
+  justify-items: center;
+  gap: var(--sp-2);
+  max-width: min(460px, calc(100vw - 48px));
+  pointer-events: none;
+}
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 9px 9px 16px;
   background: #1a2830;
   color: #d6f5f1;
   border: 1px solid #72d4d450;
-  padding: 12px 17px;
   border-radius: 10px;
   box-shadow: 0 15px 50px #0007;
-  z-index: 60;
-  font-size: 12px;
+  font-size: var(--fs-sm);
+  pointer-events: auto;
+  animation: toast-in 0.18s ease-out;
 }
 .toast.error {
   background: #30202a;
   color: #ffc0cb;
   border-color: #f28a9650;
+}
+.toast-text {
+  flex: 1;
+  min-width: 0;
+}
+.toast-action {
+  padding: 4px 10px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  background: transparent;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.toast-close {
+  display: grid;
+  place-items: center;
+  padding: 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  opacity: 0.7;
+}
+.toast-close:hover {
+  opacity: 1;
+  background: #ffffff10;
+}
+.toast-close svg {
+  width: 14px;
+  height: 14px;
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+/* A line under the top bar while the controller is unplugged or unreachable. */
+.banner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-shrink: 0;
+  padding: 8px 28px;
+  border-bottom: 1px solid #d9bd8330;
+  background: #1f1c14;
+  color: #ead9b2;
+  font-size: var(--fs-md);
+}
+.banner .grow {
+  flex: 1;
+}
+.banner.error {
+  border-bottom-color: #f28a9640;
+  background: #261a1f;
+  color: #ffc9d1;
 }
 .modal {
   position: fixed;
@@ -1629,6 +1697,9 @@ textarea {
   }
   .topbar {
     padding: 0 20px;
+  }
+  .banner {
+    padding: 8px 20px;
   }
   .studio-layout {
     grid-template-columns: minmax(375px, 1fr) 280px;

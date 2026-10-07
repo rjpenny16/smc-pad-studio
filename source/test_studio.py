@@ -78,6 +78,12 @@ class FakeTransport:
         else:
             self.responses.put((0, encode(cmd)))
 
+    def close_input(self, port):
+        self.inputs.pop(port, None)
+
+    def close_output(self):
+        pass
+
     def close(self):
         pass
 
@@ -620,11 +626,15 @@ class RegressionTests(unittest.TestCase):
                     with patch.object(controller.device_queue, 'put_nowait') as put:
                         Controller._check_usb(controller)
                 put.assert_not_called()
-                # Unplugging is noticed and reported.
+                # Unplugging is noticed and reported, and the interface can tell it from a Disconnect.
+                self.assertEqual(controller.connection['reason'], 'notConnected')
                 controller.primary = 'SMC-PAD'
                 with patch('controller.ports', return_value={'inputs': [], 'outputs': []}):
                     Controller._check_usb(controller)
                 self.assertEqual((controller.primary, controller.connection['state']), ('', 'disconnected'))
+                self.assertEqual(controller.connection['reason'], 'unplugged')
+                self.assertTrue(controller.request('disconnect')['ok'])
+                self.assertEqual(controller.connection['reason'], 'manual')
             finally:
                 controller.close()
 

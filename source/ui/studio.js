@@ -184,7 +184,6 @@ let state = null,
   library = [],
   chosenClip = null,
   polling = null,
-  toastTimer,
   modalResolve,
   modalPreviousFocus;
 const clone = (x) => JSON.parse(JSON.stringify(x));
@@ -215,11 +214,63 @@ async function call(command, data = {}) {
   if (!result.ok) throw Error(result.error || 'Operation failed');
   return result.value;
 }
-function toast(message, error = false) {
-  $('toast').textContent = message;
-  $('toast').className = 'toast' + (error ? ' error' : '');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => $('toast').classList.add('hidden'), error ? 7000 : 3200);
+// Up to three messages at once, newest last. Errors stay longer, and hovering keeps a message open.
+// action ({label, run}) adds a button such as Undo.
+function toast(message, error = false, action = null) {
+  const list = $('toasts');
+  for (const old of list.querySelectorAll('.toast'))
+    if (old.querySelector('.toast-text').textContent === message) old.remove();
+  const el = document.createElement('div');
+  el.className = 'toast' + (error ? ' error' : '');
+  if (error) el.setAttribute('role', 'alert');
+  el.innerHTML = `<span class="toast-text"></span>${action ? '<button type="button" class="toast-action"></button>' : ''}<button type="button" class="toast-close" aria-label="Dismiss">${icon('close')}</button>`;
+  el.querySelector('.toast-text').textContent = message;
+  let timer;
+  const close = () => {
+    clearTimeout(timer);
+    el.remove();
+  };
+  const arm = () => (timer = setTimeout(close, error ? 8000 : action ? 6000 : 3500));
+  if (action) {
+    el.querySelector('.toast-action').textContent = action.label;
+    el.querySelector('.toast-action').onclick = () => {
+      close();
+      safe(action.run);
+    };
+  }
+  el.querySelector('.toast-close').onclick = close;
+  el.addEventListener('mouseenter', () => clearTimeout(timer));
+  el.addEventListener('mouseleave', arm);
+  list.append(el);
+  while (list.children.length > 3) list.firstElementChild.remove();
+  arm();
+}
+// Undo from a message. It reverts only that change: after another edit, the top bar's Undo is the way.
+const undoAction = (expected) => ({
+  label: 'Undo',
+  run: async () => {
+    await refresh();
+    if (state.undoLabel !== expected)
+      return toast('Other changes were made since. Use Undo in the top bar to step back.', true);
+    await undoLast();
+  },
+});
+async function undoLast() {
+  if (dirty) {
+    const discard = await modal(
+      'Undo and discard unsaved changes?',
+      `<p class="muted">Undo also discards the unsaved changes to ${esc(draft.label)}.</p>`,
+      [
+        { label: 'Keep editing', value: null },
+        { label: 'Discard and undo', value: true },
+      ],
+    );
+    if (!discard) return;
+  }
+  dirty = false;
+  const undone = await mutate('undo');
+  loadEditor();
+  toast(undone ? 'Undone: ' + undone : 'Nothing to undo');
 }
 async function safe(fn) {
   try {
@@ -257,6 +308,8 @@ async function refresh() {
             ' learned: ' +
             describeMapping(control.mapping) +
             (learned.moved?.length ? ' (moved from ' + learned.moved.join(', ') + ')' : ''),
+          false,
+          learned.moved?.length ? undoAction('Learn ' + control.label) : null,
         );
     }
     // Clips were added, removed, renamed or measured: an open Soundboard reloads its list.
@@ -859,6 +912,38 @@ function renderColorJobs() {
   const text = describe(done);
   if (text) toast(text);
 }
+// A line under the top bar when the controller is unplugged, unreachable or disconnected on purpose.
+function renderBanner() {
+  const c = state.connection,
+    auto = store?.settings.autoConnect !== false;
+  let text = '',
+    tone = '',
+    actions = [];
+  if (c.state === 'error') {
+    text = "Can't reach the controller: " + c.message;
+    tone = 'error';
+    actions = [
+      ['connect', 'Try again'],
+      ['device', 'Device page'],
+    ];
+  } else if (c.state === 'disconnected' && c.reason === 'unplugged')
+    [text, actions] = auto
+      ? ['Controller unplugged. Mappings resume when it is plugged back in.', []]
+      : ['Controller unplugged.', [['connect', 'Connect']]];
+  else if (c.state === 'disconnected' && c.reason === 'manual')
+    [text, actions] = ['Disconnected. Studio stays offline until you connect again.', [['connect', 'Connect']]];
+  else if (c.state === 'disconnected' && !auto)
+    [text, actions] = ['Not connected. Automatic connection is off in Settings.', [['connect', 'Connect']]];
+  $('banner').classList.toggle('hidden', !text);
+  $('banner').classList.toggle('error', tone === 'error');
+  renderOnChange(
+    $('banner'),
+    [text, actions],
+    () =>
+      `<span class="grow">${esc(text)}</span>` +
+      actions.map(([key, name]) => `<button class="btn tiny" data-banner="${key}">${esc(name)}</button>`).join(''),
+  );
+}
 function renderLive(previous) {
   if (!state) return;
   let connected = state.connection.state === 'connected';
@@ -866,6 +951,7 @@ function renderLive(previous) {
   $('aboutVersion').textContent = 'SMC-PAD Studio ' + state.version;
   $('undoBtn').disabled = !state.canUndo;
   renderAutostart();
+  renderBanner();
   $('connectionDot').classList.toggle('on', connected);
   $('railStatus').textContent = connected
     ? 'Background MIDI active'
@@ -1816,7 +1902,7 @@ $('copySelected').onclick = () =>
   safe(async () => {
     await saveEditor();
     await mutate('copyControls', { ...target, source: selected, ids: [...multi].filter((id) => id !== selected) });
-    toast('Configuration copied; MIDI assignments preserved');
+    toast('Configuration copied. MIDI assignments are kept.', false, undoAction('Copy configuration'));
   });
 $('audioDrop').onclick = () => safe(() => importForEditor());
 for (const ev of ['dragenter', 'dragover'])
@@ -1850,6 +1936,10 @@ $('macroPreview').onclick = () =>
   });
 $('cancelMacros').onclick = () => safe(() => call('cancelActions'));
 for (const id of ['connectBtn', 'deviceConnect']) $(id).onclick = () => safe(connect);
+$('banner').onclick = (e) => {
+  const button = e.target.closest('[data-banner]');
+  if (button) safe(() => (button.dataset.banner === 'connect' ? connect() : showView('device')));
+};
 $('deviceDisconnect').onclick = () => safe(() => call('disconnect'));
 $('refreshPorts').onclick = () =>
   safe(async () => {
@@ -1890,7 +1980,11 @@ for (const id of ['adoptRGB', 'adoptRGBBar'])
       if (!(await allowSelection())) return;
       await mutate('adoptRGB', rgbContext());
       loadEditor();
-      toast("Studio now uses the controller's colors for Bank " + current().activeBank);
+      toast(
+        "Studio now uses the controller's colors for Bank " + current().activeBank,
+        false,
+        undoAction('Use controller colors'),
+      );
     });
 // A small menu button: opening focuses the first item, arrows move, Escape closes and returns focus.
 function wireMenu(button, list) {
@@ -1928,13 +2022,7 @@ $('pauseBtn').onclick = () =>
     await refresh();
   });
 $('stopAudioBtn').onclick = () => safe(() => call('stopAudio'));
-$('undoBtn').onclick = () =>
-  safe(async () => {
-    dirty = false;
-    const undone = await mutate('undo');
-    loadEditor();
-    toast(undone ? 'Undone: ' + undone : 'Nothing to undo');
-  });
+$('undoBtn').onclick = () => safe(undoLast);
 $('performanceBtn').onclick = () =>
   safe(async () => {
     if (!(await allowSelection())) return;
@@ -1994,7 +2082,7 @@ $('deletePage').onclick = () =>
     if (!confirmed) return;
     await mutate('deletePage');
     loadEditor();
-    toast(name + ' deleted');
+    toast(name + ' deleted', false, undoAction('Delete ' + name));
   });
 $('newProfile').onclick = () =>
   safe(async () => {
@@ -2012,7 +2100,10 @@ $('deleteProfile').onclick = () =>
         { label: 'Delete profile', value: true },
       ],
     );
-    if (result) await mutate('deleteProfile');
+    if (!result) return;
+    const name = current().name;
+    await mutate('deleteProfile');
+    toast(name + ' deleted', false, undoAction('Delete ' + name));
   });
 $('saveProfile').onclick = () =>
   safe(async () => {

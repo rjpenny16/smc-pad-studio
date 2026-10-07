@@ -174,7 +174,7 @@ class Transport:
 
     def send(self, data):
         if self.output is None:
-            raise RuntimeError('RGB output is not connected')
+            raise RuntimeError('The controller is not connected')
         buf = C.create_string_buffer(bytes(data))
         hdr = MIDIHDR(lpData=C.cast(buf, C.c_void_p), dwBufferLength=len(data))
         check(mm.midiOutPrepareHeader(self.output, C.byref(hdr), C.sizeof(hdr)))
@@ -304,7 +304,7 @@ class RGB:
     def request(self, cmd, data=b'', timeout=5, predicate=None):
         with self.lock:
             if self.port is None:
-                raise RuntimeError('Find the configuration port first')
+                raise RuntimeError('Connect the controller first')
             while True:
                 try:
                     self.transport.responses.get_nowait()
@@ -330,7 +330,9 @@ class RGB:
                 self.last_activity = time.monotonic()
                 return reply, payload
             self.ready = False
-            raise TimeoutError('No matching SMC-PAD configuration reply. Close MidiSuite and reconnect USB.')
+            raise TimeoutError(
+                'The controller did not answer. Close MidiSuite if it is open, then unplug and reconnect the controller.'
+            )
 
     def read_region(self, region, address, length, timeout=5):
         request = bytes([region]) + address.to_bytes(4, 'little') + length.to_bytes(3, 'little')
@@ -387,7 +389,7 @@ class RGB:
         (live pad feedback) passes report=False so the interface does not show a read."""
         with self.lock:
             if self.port is None:
-                raise RuntimeError('Connect the RGB configuration port first')
+                raise RuntimeError('Connect the controller first')
             self.request(0x11)
             self.header = self.read_region(4, 0, 12)
             flash = bytearray(28312)
@@ -401,7 +403,7 @@ class RGB:
 
     def address(self, pad, preset, bank):
         if not self.ready or self.flash is None:
-            raise RuntimeError('Read device colors first')
+            raise RuntimeError('Read the pad colors from the controller first')
         preset = int(preset)
         pad = int(pad)
         if not 0 <= preset <= 7 or not 1 <= pad <= 16 or bank not in BANK_GROUP:
@@ -533,7 +535,9 @@ class RGB:
                 self.cancel.clear()
                 restored = self.apply(originals, preset, bank, refresh=False)
             if not all(r['ok'] for r in restored):
-                raise RuntimeError('Identify could not restore every pad. Read colors, then Apply to restore them.')
+                raise RuntimeError(
+                    'Identify could not restore every pad. Read colors, then Sync colors to restore them.'
+                )
             self.event(
                 'rgb',
                 {

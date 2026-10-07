@@ -156,7 +156,12 @@ class Controller:
         self.learned = None
         self.previous = {}
         self.primary = ''
-        self.connection = {'state': 'disconnected', 'message': 'Connect your SMC-PAD to begin'}
+        # reason tells the interface why it is not connected: notConnected, unplugged or manual.
+        self.connection = {
+            'state': 'disconnected',
+            'reason': 'notConnected',
+            'message': 'Connect your SMC-PAD to begin',
+        }
         self.rgb_state = {'state': 'notRead', 'colors': {}, 'results': []}
         self.last_midi = None
         self.available = ports()
@@ -512,7 +517,7 @@ class Controller:
                         else next(iter(candidates), None)
                     )
                     if not inp:
-                        raise RuntimeError('No SMC-PAD performance input found. Connect USB and refresh ports.')
+                        raise RuntimeError('No SMC-PAD found. Check that its USB cable is plugged in.')
                     self.transport.open_input(inp)
                     self.primary = inp['name']
                     self.connection = {
@@ -676,6 +681,7 @@ class Controller:
             self.rgb.ready = False
             self.connection = {
                 'state': 'disconnected',
+                'reason': 'unplugged',
                 'message': 'USB disconnected. Studio reconnects when the controller is plugged back in.',
             }
             self.primary = ''
@@ -778,6 +784,8 @@ class Controller:
                     'audio': self.audio.snapshot(),
                     'paused': self.paused,
                     'canUndo': bool(self.store.undo),
+                    # What Undo would revert, so an Undo button on a message only undoes its own change.
+                    'undoLabel': self.store.undo[-1][0] if self.store.undo else None,
                     'learning': self.learning,
                     'learned': self.learned,
                     'hits': list(self.hits),
@@ -820,19 +828,19 @@ class Controller:
                 self.rgb.ready = False
                 self.primary = ''
                 self._reconnect = None
-                self.connection = {'state': 'disconnected', 'message': 'Device disconnected'}
+                self.connection = {'state': 'disconnected', 'reason': 'manual', 'message': 'Device disconnected'}
             return True
         if command == 'saveRGB':
             if self.rgb.port is None:
-                raise RuntimeError('Connect the device configuration port first')
+                raise RuntimeError('Connect the controller first')
             if self.device_busy or not self.device_queue.empty():
-                raise RuntimeError('Wait for the current device operation, or cancel it first')
+                raise RuntimeError('The controller is busy with another color operation. Wait for it, or cancel it.')
             self.rgb_job += 1
             self.device_queue.put_nowait(('save', {'epoch': self.rgb_epoch, 'job': self.rgb_job}))
             return self.rgb_job
         if command == 'confirmPreset':
             if not self.rgb.header:
-                raise RuntimeError('Connect and read the device first')
+                raise RuntimeError('Connect the controller and read its colors first')
             preset = int(number(data.get('preset'), 0, 0, 7))
             with self.lock, self.store.lock:
                 settings = self.store.data['settings']
@@ -850,9 +858,9 @@ class Controller:
             }
         if command in ['readRGB', 'applyRGB', 'syncRGB', 'identifyRGB']:
             if self.rgb.port is None:
-                raise RuntimeError('Connect the device configuration port first')
+                raise RuntimeError('Connect the controller first')
             if self.device_busy or not self.device_queue.empty():
-                raise RuntimeError('Wait for the current device operation, or cancel it first')
+                raise RuntimeError('The controller is busy with another color operation. Wait for it, or cancel it.')
             payload = {
                 'preset': int(number(data.get('preset'), 0, 0, 7)),
                 'bank': data.get('bank', 'A'),
@@ -883,9 +891,9 @@ class Controller:
         if command == 'adoptRGB':
             with self.lock, self.store.lock:
                 if self.rgb_state.get('bank') != data.get('bank', self.store.current()['activeBank']):
-                    raise ValueError('Read colors from this bank first')
+                    raise ValueError("Read this bank's colors from the controller first")
                 target = self._target(data)
-                self.store.checkpoint('Use device colors')
+                self.store.checkpoint('Use controller colors')
                 for cid, color in self.rgb_state.get('colors', {}).items():
                     target[cid]['color'] = color
                 self.store.persist()
@@ -921,7 +929,7 @@ class Controller:
             return True
         if command == 'learn':
             if not self.primary:
-                raise ValueError('Connect MIDI before learning a control')
+                raise ValueError('Connect the controller before using Learn')
             if data['id'] not in self._target(data):
                 raise ValueError('Unknown control')
             self.learning = {
