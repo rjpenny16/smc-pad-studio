@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>SMC-PAD Studio</title>
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data:; font-src 'none'; connect-src 'none'"
+    />
+    <link rel="stylesheet" href="studio.css" />
+  </head>
+  <body>
+    <svg style="display: none" aria-hidden="true">
+      <defs>
+        <symbol id="i-grid" viewBox="0 0 24 24">
+          <rect x="3" y="3" width="7" height="7" rx="1.5" />
+          <rect x="14" y="3" width="7" height="7" rx="1.5" />
+          <rect x="3" y="14" width="7" height="7" rx="1.5" />
+          <rect x="14" y="14" width="7" height="7" rx="1.5" />
+        </symbol>
+        <symbol id="i-audio" viewBox="0 0 24 24"><path d="M4 10v4m4-8v12m4-15v18m4-15v12m4-8v4" /></symbol>
+        <symbol id="i-layers" viewBox="0 0 24 24">
+          <path d="m12 3 10 6-10 6L2 9l10-6Zm-9 12 9 5 9-5M3 12l9 5 9-5" />
+        </symbol>
+        <symbol id="i-device" viewBox="0 0 24 24">
+          <rect x="2" y="5" width="20" height="14" rx="3" />
+          <path d="M5 9h3m-3 4h3m4-4h2m3 0h2m-7 4h2m3 0h2" />
+        </symbol>
+        <symbol id="i-settings" viewBox="0 0 24 24">
+          <path d="M4 7h16M4 17h16" />
+          <circle cx="9" cy="7" r="3" />
+          <circle cx="15" cy="17" r="3" />
+        </symbol>
+        <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 4 12 8-12 8V4Z" /></symbol>
+        <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1.5" /></symbol>
+        <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14m8-14v14" /></symbol>
+        <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol>
+        <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15V3m-4 4 4-4 4 4M4 15v5h16v-5" /></symbol>
+        <symbol id="i-link" viewBox="0 0 24 24">
+          <path d="m9 15 6-6m-7 2-3 3a4 4 0 0 0 6 6l3-3m-4-10 3-3a4 4 0 0 1 6 6l-3 3" />
+        </symbol>
+        <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L20 5" /></symbol>
+        <symbol id="i-more" viewBox="0 0 24 24">
+          <circle cx="5" cy="12" r="1" />
+          <circle cx="12" cy="12" r="1" />
+          <circle cx="19" cy="12" r="1" />
+        </symbol>
+        <symbol id="i-undo" viewBox="0 0 24 24"><path d="M4 10h10a6 6 0 0 1 0 12M4 10l5-5m-5 5 5 5" /></symbol>
+        <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></symbol>
+        <symbol id="i-search" viewBox="0 0 24 24">
+          <circle cx="10" cy="10" r="6" />
+          <path d="m15 15 6 6" />
+        </symbol>
+        <symbol id="i-pin" viewBox="0 0 24 24"><path d="m9 3 6 0 0 5 4 4v2H5v-2l4-4V3Zm3 11v7" /></symbol>
+      </defs>
+    </svg>
+    <div class="app">
+      <aside class="rail">
+        <div class="brand">
+          <div class="mark">
+            <svg viewBox="0 0 24 24"><path d="m5 7 7-4 7 4v4l-7 4-7-4V7Zm0 6v4l7 4 7-4v-4" /></svg>
+          </div>
+          <div class="brand-text"><strong>SMC-PAD</strong><small>STUDIO</small></div>
+        </div>
+        <div>
+          <div class="rail-label">WORKSPACE</div>
+          <nav class="nav" aria-label="Main navigation">
+            <button data-view="studio" class="active">
+              <svg><use href="#i-grid" /></svg><span>Studio</span></button
+            ><button data-view="soundboard">
+              <svg><use href="#i-audio" /></svg><span>Soundboard</span></button
+            ><button data-view="profiles">
+              <svg><use href="#i-layers" /></svg><span>Profiles</span></button
+            ><button data-view="device">
+              <svg><use href="#i-device" /></svg><span>Device</span></button
+            ><button data-view="settings">
+              <svg><use href="#i-settings" /></svg><span>Settings</span>
+            </button>
+          </nav>
+        </div>
+        <div class="rail-bottom">
+          <div class="device-mini">
+            <strong><i id="connectionDot" class="status-dot"></i>SMC-PAD</strong
+            ><small id="railStatus">Not connected</small>
+          </div>
+          <button class="btn ghost" id="diagnosticsBtn">
+            <svg><use href="#i-more" /></svg><span>Diagnostics</span>
+          </button>
+          <div class="version"><span>LOCAL & PRIVATE</span><span>v0.7.0</span></div>
+        </div>
+      </aside>
+      <div class="workspace">
+        <header class="topbar">
+          <div class="breadcrumb">Control Center <span>/</span><strong id="breadcrumb">Studio</strong></div>
+          <div class="top-actions">
+            <button class="btn ghost" id="undoBtn" title="Undo last configuration edit">
+              <svg><use href="#i-undo" /></svg><span>Undo</span></button
+            ><button class="btn" id="pauseBtn">
+              <svg><use href="#i-pause" /></svg><span>Pause mappings</span></button
+            ><button class="btn" id="stopAudioBtn">
+              <svg><use href="#i-stop" /></svg><span>Stop audio</span></button
+            ><button class="btn primary" id="connectBtn">
+              <svg><use href="#i-link" /></svg><span>Connect device</span>
+            </button>
+          </div>
+        </header>
+        <main class="content" id="main">
+          <section id="view-studio">
+            <div class="heading">
+              <div>
+                <div class="eyebrow">YOUR DESK. YOUR CONTROLS.</div>
+                <h1>Make every touch count.</h1>
+                <p class="muted">Shortcuts, sounds, and creative workflows — mapped to your hands.</p>
+              </div>
+              <button class="btn" id="performanceBtn">
+                <svg><use href="#i-play" /></svg>Performance
+              </button>
+            </div>
+            <div class="toolbar">
+              <select id="profileSelect" aria-label="Active profile"></select
+              ><button class="btn ghost tiny" id="pinBtn" title="Pin this profile">
+                <svg><use href="#i-pin" /></svg><span>Pinned</span></button
+              ><select id="pageSelect" aria-label="Application page"></select
+              ><button class="btn ghost tiny" id="newPageBtn" title="Add application page">
+                <svg><use href="#i-plus" /></svg>
+              </button>
+              <div class="spacer"></div>
+              <div class="segmented" aria-label="Pad bank">
+                <span class="muted" style="font-size: 10px; align-self: center; padding: 0 6px">BANK</span
+                ><button id="bankA" title="Bank A · default pad notes 36–51" aria-label="Bank A">A</button
+                ><button id="bankB" title="Bank B · default pad notes 52–67" aria-label="Bank B">B</button
+                ><button id="bankC" title="Bank C · default pad notes 68–83" aria-label="Bank C">C</button
+                ><button id="bankD" title="Bank D · default pad notes 84–99" aria-label="Bank D">D</button
+                ><button id="bankE" title="Bank E · default pad notes 100–115" aria-label="Bank E">E</button
+                ><button id="bankF" title="Bank F · default pad notes 116–127" aria-label="Bank F">F</button
+                ><button id="bankG" title="Bank G · default pad notes 4–19" aria-label="Bank G">G</button
+                ><button id="bankH" title="Bank H · default pad notes 20–35" aria-label="Bank H">H</button>
+              </div>
+            </div>
+            <div class="studio-layout">
+              <div>
+                <div class="panel">
+                  <div class="panel-head">
+                    <div class="row">
+                      <svg style="color: var(--accent)"><use href="#i-device" /></svg>
+                      <h3 style="margin: 0">Controller canvas</h3>
+                    </div>
+                    <span class="tag" id="canvasStatus">OFFLINE EDITING</span>
+                  </div>
+                  <div class="board">
+                    <div class="board-brand"><span>M-VAVE / SMC-PAD</span><span>16 PADS · 8 ENCODERS</span></div>
+                    <div class="hardware">
+                      <div class="knob-grid" id="knobs"></div>
+                      <div class="pad-grid" id="pads"></div>
+                      <div class="side-grid" id="sideBtns"></div>
+                    </div>
+                  </div>
+                  <div class="board-caption">
+                    <span><i class="micro-dot"></i><span id="mappingCount">0 mapped controls</span></span
+                    ><span id="canvasHint">Select to edit · Ctrl-click to select several</span>
+                  </div>
+                  <div class="rgb-controls">
+                    <span class="muted" style="font-size: 10px">PHYSICAL COLORS</span
+                    ><select id="rgbPreset" aria-label="Physical device preset"></select
+                    ><button class="btn tiny" id="readRGB">Read device</button
+                    ><button
+                      class="btn tiny"
+                      id="identifyRGB"
+                      title="Flash all 16 pads of this preset and bank white, then restore them"
+                    >
+                      Identify</button
+                    ><button
+                      class="btn tiny hidden"
+                      id="confirmPresetBar"
+                      title="Teach Studio which preset the hardware is using"
+                    >
+                      Pads flashed ✓</button
+                    ><button class="btn tiny primary" id="applyRGB">Apply colors</button
+                    ><button class="btn ghost tiny" id="cancelRGB">Cancel</button
+                    ><span class="tag" id="rgbStatus">Not read</span>
+                  </div>
+                </div>
+                <div class="info-cards">
+                  <div class="info-card">
+                    <label>ACTIVE WORKSPACE</label>
+                    <div class="metric" id="activeProfileLabel">My SMC-PAD</div>
+                    <small id="activePageLabel">Page 1 · Bank A</small>
+                  </div>
+                  <div class="info-card">
+                    <label>AUDIO ENGINE</label>
+                    <div class="metric" id="audioCount">0 clips</div>
+                    <small>Windows default output</small>
+                  </div>
+                  <div class="info-card">
+                    <label>LAST MIDI INPUT</label>
+                    <div class="metric" id="lastMidiValue">—</div>
+                    <small id="lastMidiPort">Waiting for a control</small>
+                  </div>
+                </div>
+              </div>
+              <aside class="panel inspector" id="inspector">
+                <div class="panel-head">
+                  <div class="inspector-title">
+                    <div class="swatch" id="selectedSwatch"></div>
+                    <div>
+                      <h3 id="selectedName" style="margin: 0">Pad 1</h3>
+                      <small class="muted" id="selectedType" style="font-size: 10px">PAD · BANK A</small>
+                    </div>
+                  </div>
+                  <span id="dirtyBadge" class="tag hidden">Unsaved</span>
+                </div>
+                <form id="editorForm" class="panel-body">
+                  <div class="field"><label for="labelInput">Label</label><input id="labelInput" maxlength="60" /></div>
+                  <div id="colorFields">
+                    <div class="row2">
+                      <div class="field">
+                        <label for="colorInput">Pad color</label><input id="colorInput" type="color" />
+                      </div>
+                      <div class="field">
+                        <label for="colorHex">Hex value</label><input id="colorHex" pattern="#[0-9a-fA-F]{6}" />
+                      </div>
+                    </div>
+                    <div class="palette" id="palette"></div>
+                    <p class="helper" id="colorState">Local color. Apply to sync with your controller.</p>
+                  </div>
+                  <hr class="section-rule" />
+                  <div class="field">
+                    <label for="actionSearch">Find an action</label
+                    ><input id="actionSearch" type="search" placeholder="Search shortcuts, audio, windows…" />
+                  </div>
+                  <div class="field">
+                    <label for="actionSelect">Action</label
+                    ><select id="actionSelect"></select>
+                  </div>
+                  <div class="field hidden" id="valueField">
+                    <label for="valueInput" id="valueLabel">Value</label>
+                    <div class="row">
+                      <textarea id="valueInput" class="grow" rows="2"></textarea
+                      ><button type="button" class="btn tiny hidden" id="browseBtn">Browse</button>
+                    </div>
+                  </div>
+                  <div id="audioFields" class="hidden">
+                    <button type="button" class="drop" id="audioDrop" style="width: 100%">
+                      <svg><use href="#i-upload" /></svg><strong id="assignedAudioName">Drop a clip or browse</strong
+                      ><span>WAV · MP3 · M4A · AAC · WMA · FLAC</span>
+                    </button>
+                    <div class="row" style="margin-top: 9px">
+                      <button type="button" class="btn tiny" id="previewClip">
+                        <svg><use href="#i-play" /></svg>Preview</button
+                      ><button type="button" class="btn ghost tiny" id="selectFromLibrary">Library</button>
+                    </div>
+                    <div class="field" style="margin-top: 12px">
+                      <label for="ytEditorUrl">Or paste a YouTube link</label>
+                      <div class="yt-row">
+                        <input
+                          id="ytEditorUrl"
+                          type="url"
+                          placeholder="https://youtu.be/…"
+                          autocomplete="off"
+                          spellcheck="false"
+                        /><button type="button" class="btn tiny" id="ytEditorGo">Get MP3</button>
+                      </div>
+                      <div class="yt-status hidden" data-yt-status>
+                        <div class="row">
+                          <span class="helper grow" data-yt-text style="margin: 0; overflow-wrap: anywhere"></span
+                          ><button type="button" class="btn ghost tiny" data-yt-cancel>Cancel</button>
+                        </div>
+                        <div class="progress"><i data-yt-bar></i></div>
+                      </div>
+                    </div>
+                    <div class="field" style="margin-top: 12px">
+                      <label for="audioMode">On repeated press</label
+                      ><select id="audioMode">
+                        <option value="restart">Restart clip</option>
+                        <option value="overlap">Allow overlap</option>
+                        <option value="toggle">Toggle play / stop</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label for="audioVolume">Clip gain <span id="clipGainValue">100%</span></label
+                      ><input id="audioVolume" type="range" min="0" max="100" value="100" />
+                    </div>
+                    <div class="field">
+                      <label id="editorCropLabel">Crop · drag the handles or the highlighted part</label>
+                      <div id="editorCrop" role="group" aria-labelledby="editorCropLabel"></div>
+                    </div>
+                    <div class="row2">
+                      <div class="field">
+                        <label for="trimStart">Trim start (seconds)</label
+                        ><input id="trimStart" type="number" min="0" step=".01" value="0" />
+                      </div>
+                      <div class="field">
+                        <label for="trimEnd">Trim end (0 = full)</label
+                        ><input id="trimEnd" type="number" min="0" step=".01" value="0" />
+                      </div>
+                    </div>
+                    <div class="row2">
+                      <div class="field">
+                        <label for="fadeIn">Fade in (seconds)</label
+                        ><input id="fadeIn" type="number" min="0" max="30" step=".1" value="0" />
+                      </div>
+                      <div class="field">
+                        <label for="fadeOut">Fade out (seconds)</label
+                        ><input id="fadeOut" type="number" min="0" max="30" step=".1" value="0" />
+                      </div>
+                    </div>
+                    <label class="check"><input id="loopAudio" type="checkbox" />Loop until stopped</label>
+                  </div>
+                  <div id="macroFields" class="hidden">
+                    <div class="inline-heading">
+                      <h3>Action sequence</h3>
+                      <button type="button" class="btn tiny" id="addStep">Add step</button>
+                    </div>
+                    <div id="steps"></div>
+                    <button type="button" class="btn ghost tiny" id="macroPreview">Dry-run preview</button
+                    ><button type="button" class="btn ghost tiny" id="cancelMacros">Cancel running</button>
+                  </div>
+                  <div id="knobFields" class="hidden">
+                    <hr class="section-rule" />
+                    <div class="field">
+                      <label for="encoderMode">Encoder mode</label
+                      ><select id="encoderMode">
+                        <option value="auto">Auto detect</option>
+                        <option value="absolute">Absolute (0–127)</option>
+                        <option value="relative">Relative increments</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label for="sensitivity">Sensitivity</label
+                      ><input id="sensitivity" type="number" min=".1" max="8" step=".1" value="1" />
+                    </div>
+                    <label class="check"><input id="invertKnob" type="checkbox" />Reverse direction</label
+                    ><label class="check"
+                      ><input id="accelerateKnob" type="checkbox" />Accelerate larger movements</label
+                    >
+                    <div class="map-info" id="calibration">Move the learned knob to preview its input.</div>
+                  </div>
+                  <hr class="section-rule" />
+                  <div class="field">
+                    <label for="triggerSelect">Trigger</label
+                    ><select id="triggerSelect">
+                      <option value="press">Press / knob movement</option>
+                      <option value="pressOnly">Press only</option>
+                      <option value="releaseOnly">Release only</option>
+                      <option value="both">Press and release</option>
+                    </select>
+                  </div>
+                  <div class="inline-heading">
+                    <h3 style="margin: 0">MIDI assignment</h3>
+                    <button type="button" class="btn ghost tiny" id="clearLearn">Clear</button>
+                  </div>
+                  <div class="map-info" id="mappingInfo">Not learned yet</div>
+                  <button type="button" class="btn" id="learnBtn" style="width: 100%">
+                    <svg><use href="#i-link" /></svg>Learn physical control
+                  </button>
+                  <div class="row" style="margin-top: 15px">
+                    <button type="submit" class="btn primary grow" id="saveControl">
+                      <svg><use href="#i-check" /></svg>Save control</button
+                    ><button type="button" class="btn" id="testAction" title="Execute this action">
+                      <svg><use href="#i-play" /></svg>Test
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    class="btn ghost tiny hidden"
+                    id="copySelected"
+                    style="width: 100%; margin-top: 8px"
+                  >
+                    Copy configuration to selected controls
+                  </button>
+                </form>
+              </aside>
+            </div>
+          </section>
+          <section id="view-soundboard" class="hidden">
+            <div class="heading">
+              <div>
+                <div class="eyebrow">SOUND, ON CUE.</div>
+                <h1>Your clip collection.</h1>
+                <p class="muted">A managed library with instant preview and a live playback mixer.</p>
+              </div>
+              <button class="btn primary" id="importClips">
+                <svg><use href="#i-plus" /></svg>Import clips
+              </button>
+            </div>
+            <div class="library-layout">
+              <div>
+                <div class="panel" style="margin-bottom: 16px">
+                  <div class="panel-body">
+                    <label for="ytUrl">Import from YouTube</label>
+                    <div class="yt-row">
+                      <input
+                        id="ytUrl"
+                        type="url"
+                        placeholder="Paste a YouTube link…"
+                        autocomplete="off"
+                        spellcheck="false"
+                      /><button class="btn primary" id="ytGo">Download MP3</button>
+                    </div>
+                    <div class="yt-status hidden" data-yt-status>
+                      <div class="row">
+                        <span class="helper grow" data-yt-text style="margin: 0; overflow-wrap: anywhere"></span
+                        ><button type="button" class="btn ghost tiny" data-yt-cancel>Cancel</button>
+                      </div>
+                      <div class="progress"><i data-yt-bar></i></div>
+                    </div>
+                    <p class="helper">
+                      Saves the audio as an MP3 in your library. Only download audio you have the right to use.
+                    </p>
+                  </div>
+                </div>
+                <div class="row" style="margin-bottom: 16px">
+                  <input
+                    id="librarySearch"
+                    class="grow"
+                    type="search"
+                    placeholder="Search your clips…"
+                    aria-label="Search audio library"
+                  /><span class="tag" id="libraryCount">0 CLIPS</span>
+                </div>
+                <div class="library-list" id="libraryList"></div>
+                <div class="panel mixer">
+                  <div class="panel-head">
+                    <h3 style="margin: 0">Live mixer</h3>
+                    <span class="tag" id="playingCount">0 PLAYING</span>
+                  </div>
+                  <div class="panel-body">
+                    <div class="field">
+                      <label for="masterVolume">Master output <span id="masterValue">100%</span></label
+                      ><input id="masterVolume" type="range" min="0" max="100" value="100" />
+                    </div>
+                    <div id="playingList"></div>
+                  </div>
+                </div>
+              </div>
+              <div class="panel">
+                <div class="panel-head">
+                  <h3 style="margin: 0">Selected clip</h3>
+                  <svg style="color: var(--accent)"><use href="#i-audio" /></svg>
+                </div>
+                <div class="panel-body" id="clipDetail">
+                  <div class="empty">Select a clip to preview or assign it.</div>
+                </div>
+              </div>
+            </div>
+          </section>
+          <section id="view-profiles" class="hidden">
+            <div class="heading">
+              <div>
+                <div class="eyebrow">A WORKSPACE FOR EVERY FLOW.</div>
+                <h1>Profiles & pages.</h1>
+                <p class="muted">Separate your work, media, and creative sessions without losing your mappings.</p>
+              </div>
+              <button class="btn primary" id="newProfile">
+                <svg><use href="#i-plus" /></svg>New profile
+              </button>
+            </div>
+            <div class="toolbar">
+              <input id="profileSearch" type="search" placeholder="Search profiles…" aria-label="Search profiles" />
+              <div class="spacer"></div>
+              <button class="btn" id="importProfile">
+                <svg><use href="#i-upload" /></svg>Import</button
+              ><button class="btn" id="exportProfile">
+                <svg><use href="#i-layers" /></svg>Export with audio
+              </button>
+            </div>
+            <div class="profiles-grid" id="profilesGrid"></div>
+            <div class="panel" style="margin-top: 20px">
+              <div class="panel-head">
+                <h3 style="margin: 0">Active profile settings</h3>
+                <span class="tag">APPLICATION PAGES ≠ DEVICE PRESETS</span>
+              </div>
+              <div class="panel-body">
+                <div class="row2">
+                  <div class="field">
+                    <label for="profileName">Profile name</label><input id="profileName" maxlength="80" />
+                  </div>
+                  <div class="field">
+                    <label for="profileApps">Auto-switch for these apps</label
+                    ><input id="profileApps" placeholder="chrome.exe, code.exe" />
+                    <p class="helper">
+                      Comma-separated executable names. Enable automatic switching in Settings and unpin the profile.
+                    </p>
+                  </div>
+                </div>
+                <div class="row">
+                  <button class="btn primary" id="saveProfile">Save profile settings</button
+                  ><button class="btn" id="duplicateProfile">Duplicate</button
+                  ><button class="btn danger" id="deleteProfile">Delete</button>
+                  <div class="spacer"></div>
+                  <button class="btn" id="renamePage">Rename current page</button>
+                </div>
+              </div>
+            </div>
+          </section>
+          <section id="view-device" class="hidden">
+            <div class="heading">
+              <div>
+                <div class="eyebrow">THE PHYSICAL CONNECTION.</div>
+                <h1>Device & color sync.</h1>
+                <p class="muted">Performance MIDI and configuration ports have separate jobs.</p>
+              </div>
+              <button class="btn" id="refreshPorts">Refresh ports</button>
+            </div>
+            <div class="device-layout">
+              <div class="panel">
+                <div class="panel-head">
+                  <h3 style="margin: 0">SMC-PAD connection</h3>
+                  <span class="tag" id="deviceStatusTag">DISCONNECTED</span>
+                </div>
+                <div class="panel-body">
+                  <div class="status-line">
+                    <div class="large-status">
+                      <svg><use href="#i-device" /></svg>
+                    </div>
+                    <div>
+                      <h2>SMC-PAD</h2>
+                      <p class="muted" id="deviceMessage">Connect USB to begin.</p>
+                    </div>
+                  </div>
+                  <div class="field">
+                    <label for="performanceInput">Performance input</label
+                    ><select id="performanceInput">
+                      <option value="">Auto discover SMC-PAD</option>
+                    </select>
+                  </div>
+                  <div class="row2">
+                    <div class="field">
+                      <label for="rgbInputPort">Configuration input</label
+                      ><select id="rgbInputPort">
+                        <option value="">Auto discover</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label for="rgbOutputPort">Configuration output</label
+                      ><select id="rgbOutputPort">
+                        <option value="">Auto discover</option>
+                      </select>
+                    </div>
+                  </div>
+                  <p class="helper">
+                    Windows may label configuration ports MIDIIN2/3 and MIDIOUT2/3. Discovery sends only read requests.
+                    Close MidiSuite if the device is busy.
+                  </p>
+                  <div class="row" style="margin-top: 16px">
+                    <button class="btn primary" id="deviceConnect">Connect</button
+                    ><button class="btn" id="deviceDisconnect">Disconnect</button>
+                  </div>
+                  <hr class="section-rule" />
+                  <h3>Physical color palette</h3>
+                  <p class="muted">
+                    Read colors, edit locally, then apply. Every successful write is checked against the device.
+                  </p>
+                  <p class="helper">
+                    Studio reads the active preset and PAD BANK switch directly from the device.
+                    <b>Apply palette</b> updates that preset; the hardware never switches presets during a color write.
+                    PAD BANK off is Bank A, and PAD BANK on is Bank B. Choose <b>Identify</b> to flash the selected bank
+                    white and restore its colors.
+                  </p>
+                  <p class="helper" id="presetDetect"></p>
+                  <div class="row hidden" id="identifyConfirm" style="margin-top: 8px">
+                    <span class="muted" id="identifyQuestion"></span
+                    ><button class="btn primary" id="confirmPreset">Pads flashed: use this preset</button>
+                  </div>
+                  <div class="row" style="margin-top: 14px">
+                    <button class="btn" id="deviceRead">Read colors</button
+                    ><button class="btn" id="deviceIdentify">Identify preset</button
+                    ><button class="btn" id="adoptRGB">Use device palette</button
+                    ><button class="btn primary" id="deviceApply">Apply palette</button
+                    ><button
+                      class="btn"
+                      id="deviceSave"
+                      title="Ask the device to keep its current colors after it is unplugged"
+                    >
+                      Save to device
+                    </button>
+                  </div>
+                  <div id="rgbResults" style="margin-top: 16px"></div>
+                </div>
+              </div>
+              <div>
+                <div class="panel">
+                  <div class="panel-head"><h3 style="margin: 0">Available MIDI endpoints</h3></div>
+                  <div class="panel-body port-list" id="portList">Scanning…</div>
+                </div>
+                <div class="panel" style="margin-top: 18px">
+                  <div class="panel-head"><h3 style="margin: 0">Connection health</h3></div>
+                  <div class="panel-body">
+                    <div id="healthInfo" class="muted"></div>
+                    <button class="btn" id="exportDiagnostics" style="margin-top: 16px">
+                      Export troubleshooting report
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+          <section id="view-settings" class="hidden">
+            <div class="heading">
+              <div>
+                <div class="eyebrow">SETTLED IN. ALWAYS READY.</div>
+                <h1>Make Studio yours.</h1>
+                <p class="muted">A quiet background companion, with the control you need.</p>
+              </div>
+            </div>
+            <div class="settings-layout">
+              <div class="panel">
+                <div class="panel-head"><h3 style="margin: 0">Behavior & accessibility</h3></div>
+                <div class="panel-body">
+                  <label class="check"
+                    ><input type="checkbox" id="autoProfiles" />Automatically switch profiles for the active
+                    application</label
+                  >
+                  <p class="helper">Pinned profiles always take precedence. App rules are set per profile.</p>
+                  <hr class="section-rule" />
+                  <label class="check"
+                    ><input type="checkbox" id="reducedMotion" />Reduce motion and visual transitions</label
+                  >
+                  <hr class="section-rule" />
+                  <label class="check"
+                    ><input type="checkbox" id="liveFeedback" />Light pads while their audio clips play</label
+                  >
+                  <div class="field" style="margin-top: 10px; max-width: 220px">
+                    <label for="liveColor">Playing color</label><input id="liveColor" type="color" />
+                  </div>
+                  <p class="helper">
+                    Uses the hardware preset chosen on the Device page. The pad returns to its stored color when
+                    playback stops. Temporary colors are never saved to the device.
+                  </p>
+                  <hr class="section-rule" />
+                  <h3>Background behavior</h3>
+                  <p class="muted">
+                    Closing the window hides Studio to the tray. Native MIDI and audio continue. Pause mappings or stop
+                    audio any time from the tray menu.
+                  </p>
+                  <button class="btn danger" id="quitApp" style="margin-top: 16px">Quit Studio completely</button>
+                </div>
+              </div>
+              <div class="panel">
+                <div class="panel-head">
+                  <h3 style="margin: 0">Local by design</h3>
+                  <span class="tag good">OFFLINE</span>
+                </div>
+                <div class="panel-body">
+                  <p class="muted">
+                    Profiles and clips live on this computer. Configuration changes are saved atomically with a
+                    recoverable backup. Export a profile bundle to take your audio with you.
+                  </p>
+                  <hr class="section-rule" />
+                  <h3>Importing an older profile</h3>
+                  <p class="muted">
+                    In v0.4 or v0.5, choose Export profile. Import that JSON in Profiles here. Old mappings go into Page
+                    1, Bank A; learn Bank B separately.
+                  </p>
+                  <hr class="section-rule" />
+                  <h3>SMC-PAD Studio 0.7.0</h3>
+                  <p class="helper">Windows x64 · Native MIDI · Windows media engine · Default audio output</p>
+                </div>
+              </div>
+            </div>
+          </section>
+        </main>
+        <footer class="statusbar">
+          <span id="footerStatus">Starting the native runtime…</span
+          ><span
+            ><button id="footerDiagnostics">Connection details</button
+            ><span style="margin-left: 14px">SMC-PAD STUDIO</span></span
+          >
+        </footer>
+      </div>
+    </div>
+    <div id="diagnostics" class="diagnostics hidden">
+      <div class="panel-head">
+        <div class="row">
+          <h3 style="margin: 0">Activity & diagnostics</h3>
+          <span class="tag" id="diagnosticCount">0 EVENTS</span>
+        </div>
+        <button class="btn ghost tiny" id="closeDiagnostics" aria-label="Close diagnostics">
+          <svg><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <div class="diagnostic-logs" id="logs"></div>
+    </div>
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+    <div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-card">
+        <h2 id="modalTitle"></h2>
+        <div id="modalBody" style="margin-top: 15px"></div>
+        <div class="modal-footer">
+          <button class="btn" id="modalCancel">Cancel</button><button class="btn primary" id="modalAccept">Save</button>
+        </div>
+      </div>
+    </div>
+    <script src="studio.js"></script>
+  </body>
+</html>
