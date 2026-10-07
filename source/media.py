@@ -55,6 +55,18 @@ def clean_name(title):
     return (title or 'YouTube audio')[:120]
 
 
+def probe_duration(path):
+    """A clip's length in seconds from its header (ffmpeg -i reads it without decoding), or None."""
+    result = subprocess.run(
+        [ffmpeg(), '-hide_banner', '-nostdin', '-i', str(path)],
+        capture_output=True,
+        timeout=30,
+        creationflags=NO_WINDOW,
+    )
+    match = re.search(rb'Duration: (\d+):(\d{2}):(\d{2}(?:\.\d+)?)', result.stderr)
+    return int(match[1]) * 3600 + int(match[2]) * 60 + float(match[3]) if match else None
+
+
 def waveform(path, width=1000, cancel=None):
     """Peak amplitude (0-1) for `width` equal slices of the clip, plus its decoded duration."""
     path = Path(path).resolve(strict=True)

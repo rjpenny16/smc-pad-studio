@@ -45,6 +45,31 @@ def work_area():
         return None
 
 
+class SHFILEOPSTRUCTW(C.Structure):
+    _fields_ = [
+        ('hwnd', W.HWND),
+        ('wFunc', W.UINT),
+        ('pFrom', W.LPCWSTR),
+        ('pTo', W.LPCWSTR),
+        ('fFlags', W.WORD),
+        ('fAnyOperationsAborted', W.BOOL),
+        ('hNameMappings', C.c_void_p),
+        ('lpszProgressTitle', W.LPCWSTR),
+    ]
+
+
+def recycle(path):
+    """Move a file to the Recycle Bin, where it can be restored. Never a permanent delete."""
+    FO_DELETE, FOF_SILENT, FOF_NOCONFIRMATION, FOF_ALLOWUNDO, FOF_NOERRORUI = 3, 0x4, 0x10, 0x40, 0x400
+    # pFrom is a list of paths ending with an extra null character.
+    operation = SHFILEOPSTRUCTW(
+        None, FO_DELETE, str(path) + '\0', None, FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI
+    )
+    result = C.WinDLL('shell32').SHFileOperationW(C.byref(operation))
+    if result or operation.fAnyOperationsAborted:
+        raise RuntimeError(f'Windows could not move the clip to the Recycle Bin (code {result})')
+
+
 def tray_text(connection_state, paused):
     """Tooltip for the tray icon; Windows limits it to 63 characters."""
     if paused:

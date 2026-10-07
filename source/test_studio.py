@@ -6,6 +6,7 @@ import queue
 import re
 import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import threading
@@ -15,7 +16,17 @@ from unittest.mock import patch
 import wave
 import zipfile
 
-from store import Store, validate_control, validate_profile, preset_locator, window_size
+from store import (
+    Store,
+    profile,
+    validate_control,
+    validate_profile,
+    preset_locator,
+    window_size,
+    editor_sections,
+    iter_clips,
+)
+from library import Library
 from midi import RGB, encode, decode, bank_for_note, default_mapping
 from controller import Controller, matches, signature, delta, effective_mappings, VERSION
 from audio import Audio
@@ -75,6 +86,12 @@ class FakeTransport:
             self.responses.put((0, encode(0, bytes([1 if self.reject else 0]))))
         else:
             self.responses.put((0, encode(cmd)))
+
+    def close_input(self, port):
+        self.inputs.pop(port, None)
+
+    def close_output(self):
+        pass
 
     def close(self):
         pass
@@ -618,11 +635,15 @@ class RegressionTests(unittest.TestCase):
                     with patch.object(controller.device_queue, 'put_nowait') as put:
                         Controller._check_usb(controller)
                 put.assert_not_called()
-                # Unplugging is noticed and reported.
+                # Unplugging is noticed and reported, and the interface can tell it from a Disconnect.
+                self.assertEqual(controller.connection['reason'], 'notConnected')
                 controller.primary = 'SMC-PAD'
                 with patch('controller.ports', return_value={'inputs': [], 'outputs': []}):
                     Controller._check_usb(controller)
                 self.assertEqual((controller.primary, controller.connection['state']), ('', 'disconnected'))
+                self.assertEqual(controller.connection['reason'], 'unplugged')
+                self.assertTrue(controller.request('disconnect')['ok'])
+                self.assertEqual(controller.connection['reason'], 'manual')
             finally:
                 controller.close()
 
@@ -921,6 +942,16 @@ class RegressionTests(unittest.TestCase):
                 except FileNotFoundError:
                     pass
 
+    def test_extra_note_banks_are_hidden_unless_turned_on(self):
+        with tempfile.TemporaryDirectory() as folder:
+            controller = Controller(folder, FakeTransport())
+            try:
+                self.assertFalse(controller.store.data['settings']['extraBanks'])
+                self.assertTrue(controller.request('settings', {'extraBanks': True})['ok'])
+            finally:
+                controller.close()
+            self.assertTrue(Store(folder).data['settings']['extraBanks'])
+
     def test_build_script_reads_the_version(self):
         # build.ps1 names the EXE from controller.VERSION with this regular expression.
         script = (Path(__file__).parent / 'build.ps1').read_text(encoding='utf8')
@@ -941,6 +972,234 @@ class RegressionTests(unittest.TestCase):
             (Path(folder) / 'studio.js').write_text('let x = "</script>";', encoding='utf8')
             with self.assertRaises(RuntimeError):
                 ui_bundle.load(folder)
+
+    def test_live_feedback_does_not_leave_a_read_showing(self):
+        # Lighting a playing pad may reopen the session; that must not look like a read in progress,
+        # which would also keep Sync, Read and Identify disabled.
+        with tempfile.TemporaryDirectory() as folder:
+            controller = Controller(folder, FakeTransport())
+            try:
+                controller.rgb.port = 0
+                controller.rgb.unlock()  # an earlier read
+                controller.rgb.ready = False  # then the session lapsed, as after a PAD BANK press
+                controller.store.data['settings'].update(liveFeedback=True, liveColor='#ff0000')
+                controller.audio.snapshot = lambda: {'players': [{'control': 'pad1'}]}
+                controller.event('rgb', {'state': 'available'})
+                controller._live_feedback()
+                self.assertIn(('A', 'pad1'), {(bank, cid) for _preset, bank, cid in controller.live_lit})
+                self.assertEqual(controller.rgb_state['state'], 'available')
+            finally:
+                controller.close()
+
+    def test_sync_writes_only_changed_pads_and_saves_when_all_succeed(self):
+        def sync(state, **outcome):
+            job = controller.request('syncRGB', {'bank': 'A'})['value']
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                done = controller.request('snapshot')['value']['rgb']['done']
+                if done and done['job'] == job and controller.rgb_state.get('state') == state:
+                    # The snapshot reports how the job ended, for the interface to announce.
+                    self.assertEqual(done, {'job': job, 'ok': True, **outcome})
+                    return controller.rgb_state['results']
+                time.sleep(0.02)
+            self.fail('Sync did not finish as ' + state + ': ' + str(controller.rgb_state.get('state')))
+
+        def writes():
+            return sum(cmd == 0x22 and int.from_bytes(data[5:8], 'little') > 0 for cmd, data in transport.sent)
+
+        with tempfile.TemporaryDirectory() as folder:
+            transport = FakeTransport()
+            controller = Controller(folder, transport)
+            try:
+                controller.rgb.port = 0
+                controller.rgb.unlock()
+                self.assertTrue(controller.store.data['settings']['saveOnSync'])
+                pads = controller.store.controls(bank='A')
+                # Pad 1 already shows its color (preset 1, Bank A starts at offset 0x418).
+                transport.memory[0x418:0x41B] = bytes.fromhex(pads['pad1']['color'][1:])
+                results = sync('saved', saved=True, failed=0)
+                self.assertEqual([r['pad'] for r in results], [f'pad{i}' for i in range(1, 17)])
+                self.assertTrue(controller.store.data['settings']['onboarding']['synced'])
+                self.assertTrue(all(r['ok'] for r in results))
+                self.assertEqual((writes(), transport.saves), (15, 1))
+                for i in range(16):
+                    address = 0x418 + i * 26
+                    self.assertEqual(transport.memory[address : address + 3].hex(), pads[f'pad{i + 1}']['color'][1:])
+                # Nothing differs now: Sync writes nothing but still saves.
+                sync('saved', saved=True, failed=0)
+                self.assertEqual((writes(), transport.saves), (15, 2))
+                # With saving turned off, Sync only applies.
+                self.assertTrue(controller.request('settings', {'saveOnSync': False})['ok'])
+                pads['pad2']['color'] = '#010203'
+                sync('synced', saved=False, failed=0)
+                self.assertEqual((writes(), transport.saves), (16, 2))
+                # A pad that fails its readback is never saved.
+                self.assertTrue(controller.request('settings', {'saveOnSync': True})['ok'])
+                pads['pad3']['color'] = '#040506'
+                transport.bad_readback = True
+                results = sync('partial', saved=False, failed=1)
+                self.assertFalse(next(r for r in results if r['pad'] == 'pad3')['ok'])
+                self.assertEqual(transport.saves, 2)
+            finally:
+                controller.close()
+            self.assertTrue(Store(folder).data['settings']['saveOnSync'])
+
+    def test_library_dedupes_shows_usage_renames_and_recycles(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / 'Horn.wav'
+            with wave.open(str(source), 'wb') as audio:
+                audio.setnchannels(1)
+                audio.setsampwidth(2)
+                audio.setframerate(8000)
+                audio.writeframes(bytes(1600))
+            controller = Controller(Path(folder) / 'studio', FakeTransport())
+            controller._probe = lambda paths: None  # lengths are measured in another test
+            try:
+                first = controller.request('importAudio', {'paths': [str(source)]})['value'][0]
+                again = controller.request('importAudio', {'paths': [str(source)]})['value'][0]
+                self.assertEqual(again, {'path': first['path'], 'name': 'Horn.wav', 'existing': True})
+                self.assertEqual(len(controller.library.files()), 1)
+                pads = controller.store.controls()
+                pads['pad1'].update(action='playAudio', value=first['path'], audioName='Horn.wav')
+                pads['pad2'].update(action='macro', steps=[{'type': 'playAudio', 'value': first['path']}])
+                self.assertEqual([cid for _, _, cid, _ in iter_clips(controller.store.current())], ['pad1', 'pad2'])
+                controller.store.checkpoint('Edit')  # an Undo snapshot that still names the clip
+                listing = controller.request('library')['value']
+                self.assertEqual(
+                    [(u['id'], u['step']) for u in listing[0]['usedBy']], [('pad1', False), ('pad2', True)]
+                )
+                # Rename keeps the unique prefix and moves every reference, Undo snapshots included.
+                renamed = controller.request('renameClip', {'path': first['path'], 'name': 'Air: horn.wav'})['value']
+                self.assertEqual(renamed['name'], 'Air horn.wav')
+                self.assertEqual(Path(renamed['path']).name[:33], Path(first['path']).name[:33])
+                self.assertFalse(Path(first['path']).exists())
+                self.assertEqual((pads['pad1']['value'], pads['pad1']['audioName']), (renamed['path'], 'Air horn.wav'))
+                self.assertEqual(pads['pad2']['steps'][0]['value'], renamed['path'])
+                undone = controller.store.undo[-1][1]
+                self.assertEqual(
+                    [h['value'] for p in undone['profiles'] for *_, h in iter_clips(p)], [renamed['path']] * 2
+                )
+                # Only files inside the library can be renamed or removed.
+                self.assertFalse(controller.request('renameClip', {'path': str(source), 'name': 'x'})['ok'])
+                self.assertFalse(controller.request('removeClip', {'path': str(source)})['ok'])
+                self.assertTrue(source.exists())
+                recycled = []
+                with patch('desktop.recycle', side_effect=lambda path: (recycled.append(path), path.unlink())):
+                    self.assertTrue(controller.request('removeClip', {'path': renamed['path']})['ok'])
+                self.assertEqual(recycled, [Path(renamed['path'])])
+                self.assertEqual(controller.request('snapshot')['value']['missingClips'], ['pad1', 'pad2'])
+            finally:
+                controller.close()
+
+    def test_clip_rename_finds_references_however_the_folder_is_spelled(self):
+        # Windows may store the data folder with 8.3 short names (C:\Users\RUNNER~1) while the
+        # resolved path is long. A symbolic link gives the same two spellings of one folder here.
+        with tempfile.TemporaryDirectory() as folder:
+            real, alias = Path(folder) / 'real', Path(folder) / 'alias'
+            real.mkdir()
+            try:
+                alias.symlink_to(real, target_is_directory=True)
+            except OSError:
+                self.skipTest('Symbolic links are not available')
+            library = Library(alias / 'Audio')
+            clip = library.folder / ('0' * 32 + '-Horn.wav')
+            library.folder.mkdir()
+            clip.write_bytes(b'RIFF')
+            data = {'profiles': [profile()]}
+            pad = data['profiles'][0]['pages'][0]['banks']['A']['pad1']
+            pad.update(action='playAudio', value=str(clip), audioName='Horn.wav')
+            new = library.rename(library.resolve(str(clip)), 'Air horn', [data])
+            self.assertEqual((pad['value'], pad['audioName']), (str(new), 'Air horn.wav'))
+
+    def test_clip_lengths_are_read_in_the_background(self):
+        header = b'Input #0, wav, from x.wav:\n  Duration: 00:01:03.45, bitrate: 128 kb/s\n'
+        with patch('media.ffmpeg', return_value='ffmpeg'), patch('media.subprocess.run') as run:
+            run.return_value = subprocess.CompletedProcess([], 1, b'', header)
+            self.assertAlmostEqual(media.probe_duration('x.wav'), 63.45)
+            run.return_value = subprocess.CompletedProcess([], 1, b'', b'x.wav: Invalid data found')
+            self.assertIsNone(media.probe_duration('x.wav'))
+        with tempfile.TemporaryDirectory() as folder:
+            controller = Controller(folder, FakeTransport())
+            try:
+                controller.library.folder.mkdir(parents=True)
+                (controller.library.folder / ('0' * 32 + '-Clap.wav')).write_bytes(b'RIFF')
+                before = controller.request('snapshot')['value']['libraryRevision']
+                with patch('media.probe_duration', return_value=2.5):
+                    controller.request('library')  # starts measuring; the listing does not wait for it
+                    controller.probe_thread.join(5)
+                self.assertEqual(controller.request('library')['value'][0]['duration'], 2.5)
+                self.assertGreater(controller.request('snapshot')['value']['libraryRevision'], before)
+            finally:
+                controller.close()
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows Recycle Bin')
+    def test_recycle_moves_a_file_to_the_recycle_bin(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'studio-recycle-check.wav'
+            path.write_bytes(b'RIFF')
+            desktop.recycle(path)
+            self.assertFalse(path.exists())
+
+    def test_getting_started_ticks_off_steps_and_skips_existing_setups(self):
+        with tempfile.TemporaryDirectory() as folder:
+            controller = Controller(folder, FakeTransport())
+            controller._check_usb = lambda: None  # park the background check; it would clear primary
+            try:
+                progress = controller.store.data['settings']['onboarding']
+                self.assertEqual(progress, {'pressed': False, 'synced': False, 'dismissed': False})
+                controller.primary = 'SMC-PAD'
+                revision = controller.revision
+                controller.on_midi('SMC-PAD', [0x99, 36, 100])  # Pad 1's factory note
+                self.assertTrue(progress['pressed'])
+                self.assertGreater(controller.revision, revision)
+                self.assertTrue(controller.request('onboarding', {'dismissed': True})['ok'])
+                self.assertEqual(controller.store.undo, [])
+            finally:
+                controller.close()
+            self.assertEqual(
+                Store(folder).data['settings']['onboarding'], {'pressed': True, 'synced': False, 'dismissed': True}
+            )
+        # Pads set up before Getting started existed: the checklist stays hidden.
+        with tempfile.TemporaryDirectory() as folder:
+            store = Store(folder)
+            store.controls()['pad1']['action'] = 'mediaNext'
+            del store.data['settings']['onboarding']
+            store.persist()
+            self.assertTrue(Store(folder).data['settings']['onboarding']['dismissed'])
+
+    def test_editor_sections_are_remembered_without_an_undo_step(self):
+        with tempfile.TemporaryDirectory() as folder:
+            controller = Controller(folder, FakeTransport())
+            try:
+                controller._check_usb = lambda: None  # park the background check; it would clear primary
+                controller.primary = 'SMC-PAD'
+                self.assertEqual(
+                    controller.store.data['settings']['editorSections'],
+                    {'action': True, 'light': True, 'physical': True},
+                )
+                self.assertTrue(controller.request('learn', {'id': 'pad1'})['ok'])
+                before = controller.revision, len(controller.store.undo)
+                self.assertTrue(controller.request('editorSections', {'physical': False, 'other': False})['ok'])
+                # Layout is not an edit: no Undo step, no refresh, and Learn keeps waiting.
+                self.assertEqual((controller.revision, len(controller.store.undo)), before)
+                self.assertEqual(controller.learning['id'], 'pad1')
+            finally:
+                controller.close()
+            self.assertEqual(
+                Store(folder).data['settings']['editorSections'],
+                {'action': True, 'light': True, 'physical': False},
+            )
+        self.assertEqual(editor_sections('closed'), {'action': True, 'light': True, 'physical': True})
+
+    def test_shortcut_names_in_the_editor_match_actions(self):
+        # The pad editor records and checks shortcuts with the key names actions.shortcut accepts.
+        source = (Path(__file__).parent / 'ui' / 'studio.js').read_text(encoding='utf8')
+        known = re.search(r'const SHORTCUT_KEYS = new Set\(\[(.*?)\]\);', source, re.S).group(1)
+        self.assertIn("Array.from({ length: 24 }, (_, i) => 'f' + (i + 1))", known)
+        names = set(re.findall(r"^\s*'([a-z]+)',$", known, re.M)) | {f'f{i}' for i in range(1, 25)}
+        self.assertEqual(names, set(actions.KEYS))
+        recorded = re.search(r'const KEY_NAMES = \{(.*?)\};', source, re.S).group(1)
+        self.assertLessEqual(set(re.findall(r": '([a-z]+)',", recorded)), set(actions.KEYS))
 
 
 if __name__ == '__main__':

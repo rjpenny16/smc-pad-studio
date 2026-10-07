@@ -61,7 +61,106 @@ const COLORS = [
   '#38bdf8',
   '#818cf8',
 ];
-const SIDE_NAMES = ['BT', 'Pad Bank', 'Knob Bank', 'Left', 'Right', 'Play', 'Stop', 'Record', 'Shift', 'Repeat'];
+const SIDE_NAMES = ['BT', 'Pad bank', 'Knob bank', 'Left', 'Right', 'Play', 'Stop', 'Record', 'Shift', 'Repeat'];
+// Actions whose value is typed into #valueInput: field label and placeholder. playAudio keeps its clip path there too.
+const VALUE_ACTIONS = {
+  launch: ['App or file', 'Browse or paste a path'],
+  url: ['Website address', 'https://example.com'],
+  typeText: ['Text to type', 'The text Studio types for you'],
+};
+// Key names actions.shortcut understands besides single characters (test_studio compares the lists).
+const SHORTCUT_KEYS = new Set([
+  'ctrl',
+  'control',
+  'alt',
+  'shift',
+  'win',
+  'windows',
+  'enter',
+  'return',
+  'tab',
+  'space',
+  'esc',
+  'escape',
+  'backspace',
+  'delete',
+  'del',
+  'insert',
+  'home',
+  'end',
+  'pageup',
+  'pagedown',
+  'up',
+  'down',
+  'left',
+  'right',
+  'plus',
+  'minus',
+  ...Array.from({ length: 24 }, (_, i) => 'f' + (i + 1)),
+]);
+// How stored key names read: ctrl+shift+t is shown as Ctrl + Shift + T.
+const KEY_LABELS = {
+  ctrl: 'Ctrl',
+  control: 'Ctrl',
+  alt: 'Alt',
+  shift: 'Shift',
+  win: 'Win',
+  windows: 'Win',
+  enter: 'Enter',
+  return: 'Enter',
+  tab: 'Tab',
+  space: 'Space',
+  esc: 'Esc',
+  escape: 'Esc',
+  backspace: 'Backspace',
+  delete: 'Delete',
+  del: 'Delete',
+  insert: 'Insert',
+  home: 'Home',
+  end: 'End',
+  pageup: 'PageUp',
+  pagedown: 'PageDown',
+  up: 'Up',
+  down: 'Down',
+  left: 'Left',
+  right: 'Right',
+  plus: 'Plus',
+  minus: 'Minus',
+};
+// KeyboardEvent.key values recorded by name. '+' separates keys, so the plus key is "plus".
+const KEY_NAMES = {
+  Control: 'ctrl',
+  Alt: 'alt',
+  Shift: 'shift',
+  Meta: 'win',
+  Enter: 'enter',
+  Tab: 'tab',
+  ' ': 'space',
+  Escape: 'esc',
+  Backspace: 'backspace',
+  Delete: 'delete',
+  Insert: 'insert',
+  Home: 'home',
+  End: 'end',
+  PageUp: 'pageup',
+  PageDown: 'pagedown',
+  ArrowUp: 'up',
+  ArrowDown: 'down',
+  ArrowLeft: 'left',
+  ArrowRight: 'right',
+  '+': 'plus',
+  '-': 'minus',
+};
+const MODIFIER_KEYS = ['ctrl', 'alt', 'shift', 'win'];
+const SHORTCUT_HINT = 'Select Record and press the keys. Type Win-key shortcuts such as Win + D by hand.';
+// Title and one-line description shown in the top bar for each view.
+const VIEWS = {
+  studio: ['Studio', 'Choose a pad, knob or button to change what it does.'],
+  soundboard: ['Soundboard', 'Your clips, quick previews and the live mixer.'],
+  profiles: ['Profiles & pages', 'A profile for each app, with pages of actions inside it.'],
+  device: ['Device', 'Connection, pad lighting and troubleshooting.'],
+  settings: ['Settings', 'How Studio starts, connects and behaves.'],
+};
 const waves = new Map(),
   croppers = new Set();
 let editorCrop = null,
@@ -74,11 +173,17 @@ let state = null,
   draft = null,
   target = null,
   dirty = false,
+  actionValues = {},
+  comboOpen = false,
+  comboItems = [],
+  comboActive = -1,
+  recording = null,
+  sectionsApplied = false,
+  missingClips = [],
   performance = false,
   library = [],
   chosenClip = null,
   polling = null,
-  toastTimer,
   modalResolve,
   modalPreviousFocus;
 const clone = (x) => JSON.parse(JSON.stringify(x));
@@ -109,11 +214,63 @@ async function call(command, data = {}) {
   if (!result.ok) throw Error(result.error || 'Operation failed');
   return result.value;
 }
-function toast(message, error = false) {
-  $('toast').textContent = message;
-  $('toast').className = 'toast' + (error ? ' error' : '');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => $('toast').classList.add('hidden'), error ? 7000 : 3200);
+// Up to three messages at once, newest last. Errors stay longer, and hovering keeps a message open.
+// action ({label, run}) adds a button such as Undo.
+function toast(message, error = false, action = null) {
+  const list = $('toasts');
+  for (const old of list.querySelectorAll('.toast'))
+    if (old.querySelector('.toast-text').textContent === message) old.remove();
+  const el = document.createElement('div');
+  el.className = 'toast' + (error ? ' error' : '');
+  if (error) el.setAttribute('role', 'alert');
+  el.innerHTML = `<span class="toast-text"></span>${action ? '<button type="button" class="toast-action"></button>' : ''}<button type="button" class="toast-close" aria-label="Dismiss">${icon('close')}</button>`;
+  el.querySelector('.toast-text').textContent = message;
+  let timer;
+  const close = () => {
+    clearTimeout(timer);
+    el.remove();
+  };
+  const arm = () => (timer = setTimeout(close, error ? 8000 : action ? 6000 : 3500));
+  if (action) {
+    el.querySelector('.toast-action').textContent = action.label;
+    el.querySelector('.toast-action').onclick = () => {
+      close();
+      safe(action.run);
+    };
+  }
+  el.querySelector('.toast-close').onclick = close;
+  el.addEventListener('mouseenter', () => clearTimeout(timer));
+  el.addEventListener('mouseleave', arm);
+  list.append(el);
+  while (list.children.length > 3) list.firstElementChild.remove();
+  arm();
+}
+// Undo from a message. It reverts only that change: after another edit, the top bar's Undo is the way.
+const undoAction = (expected) => ({
+  label: 'Undo',
+  run: async () => {
+    await refresh();
+    if (state.undoLabel !== expected)
+      return toast('Other changes were made since. Use Undo in the top bar to step back.', true);
+    await undoLast();
+  },
+});
+async function undoLast() {
+  if (dirty) {
+    const discard = await modal(
+      'Undo and discard unsaved changes?',
+      `<p class="muted">Undo also discards the unsaved changes to ${esc(draft.label)}.</p>`,
+      [
+        { label: 'Keep editing', value: null },
+        { label: 'Discard and undo', value: true },
+      ],
+    );
+    if (!discard) return;
+  }
+  dirty = false;
+  const undone = await mutate('undo');
+  loadEditor();
+  toast(undone ? 'Undone: ' + undone : 'Nothing to undo');
 }
 async function safe(fn) {
   try {
@@ -134,6 +291,7 @@ async function refresh() {
     const learned = previous && snap.learned && snap.learned.seq !== previous.learned?.seq ? snap.learned : null;
     if (snap.store) {
       store = snap.store;
+      missingClips = snap.missingClips || [];
       renderStore();
       if (!dirty) loadEditor();
       else if (learned && sameControl(learned, target)) {
@@ -150,8 +308,12 @@ async function refresh() {
             ' learned: ' +
             describeMapping(control.mapping) +
             (learned.moved?.length ? ' (moved from ' + learned.moved.join(', ') + ')' : ''),
+          false,
+          learned.moved?.length ? undoAction('Learn ' + control.label) : null,
         );
     }
+    // Clips were added, removed, renamed or measured: an open Soundboard reloads its list.
+    if (view === 'soundboard' && previous && snap.libraryRevision !== previous.libraryRevision) safe(loadLibrary);
     renderLive(previous);
     renderHits(previous);
     renderDownload();
@@ -183,7 +345,16 @@ function renderStore() {
   let p = current();
   setOptions($('profileSelect'), store.profiles, store.activeProfile);
   setOptions($('pageSelect'), p.pages, p.activePage);
-  for (const b of 'ABCDEFGH') $('bank' + b).classList.toggle('active', p.activeBank === b);
+  for (const b of 'ABCDEFGH') {
+    $('bank' + b).classList.toggle('active', p.activeBank === b);
+    $('bank' + b).classList.toggle('hidden', !bankVisible(p, b));
+  }
+  $('extraBanks').checked = !!store.settings.extraBanks;
+  $('saveOnSync').checked = store.settings.saveOnSync !== false;
+  if (!sectionsApplied) {
+    sectionsApplied = true;
+    applySections(store.settings.editorSections);
+  }
   $('rgbPreset').value = String(store.settings.hardwarePreset ?? 0);
   $('liveFeedback').checked = !!store.settings.liveFeedback;
   $('liveColor').value = store.settings.liveColor || '#ffffff';
@@ -199,6 +370,46 @@ function renderStore() {
   document.body.classList.toggle('reduced-motion', store.settings.reducedMotion);
   renderBoard();
   renderProfiles();
+  renderOnboarding();
+}
+// Get started: each step ticks by itself from what Studio sees.
+const ONBOARDING_STEPS = [
+  ['connected', 'Plug in your SMC-PAD', 'Studio connects by itself over USB.'],
+  ['pressed', 'Press a pad', 'It lights up on the canvas below.'],
+  ['action', 'Give a pad an action', 'Select a pad, choose what it does, then Save.'],
+  ['synced', 'Sync pad colors', "Send Studio's colors to the controller."],
+];
+function renderOnboarding() {
+  if (!store || !state) return;
+  const progress = store.settings.onboarding || {};
+  const done = {
+    connected: state.connection.state === 'connected',
+    pressed: !!progress.pressed,
+    action: store.profiles.some((p) =>
+      p.pages.some((pg) =>
+        Object.values(pg.banks).some((bank) => Object.values(bank).some((c) => c.action !== 'none')),
+      ),
+    ),
+    synced: !!progress.synced,
+  };
+  const count = ONBOARDING_STEPS.filter(([key]) => done[key]).length;
+  $('onboarding').classList.toggle('hidden', !!progress.dismissed);
+  $('showOnboarding').checked = !progress.dismissed;
+  $('onboardingSummary').textContent =
+    count === ONBOARDING_STEPS.length ? 'All set. Your SMC-PAD is ready to play.' : count + ' of 4 done';
+  $('hideOnboarding').textContent = count === ONBOARDING_STEPS.length ? 'Done' : 'Hide';
+  renderOnChange($('onboardingSteps'), done, () =>
+    ONBOARDING_STEPS.map(
+      ([key, title, hint]) =>
+        `<li class="${done[key] ? 'done' : ''}"><span class="step-check">${done[key] ? icon('check') : ''}</span><div><strong>${esc(title)}</strong><small>${esc(done[key] ? 'Done' : hint)}</small></div></li>`,
+    ).join(''),
+  );
+}
+// Banks C-H are for controllers that send other note ranges, so they show only when wanted or in use.
+function bankVisible(p, b) {
+  if ('AB'.includes(b) || store.settings.extraBanks || p.activeBank === b) return true;
+  const bank = page().banks[b];
+  return !!bank && Object.values(bank).some((c) => c.action !== 'none' || c.mapping);
 }
 function renderBoard() {
   if (!store) return;
@@ -218,13 +429,15 @@ function renderBoard() {
     if (isPad) {
       const n = Number(cid.slice(3)) - 1;
       button.style.order = (3 - Math.floor(n / 4)) * 4 + (n % 4);
-      button.innerHTML = `<span class="pad-number">${cid.slice(3).padStart(2, '0')}</span><span class="pad-name">${esc(cfg.label)}</span><span class="pad-type">${cfg.action === 'none' ? 'Unassigned' : esc(label(cfg.action))}</span>`;
+      button.classList.toggle('missing', missingClips.includes(cid));
+      button.innerHTML = `<span class="pad-number">${cid.slice(3).padStart(2, '0')}</span><span class="pad-name">${esc(cfg.label)}</span><span class="pad-type">${esc(padType(cid, cfg, false))}</span>`;
       $('pads').append(button);
     } else if (isKnob) {
       button.innerHTML = `<span class="dial"><span class="dial-core"></span></span><span>${esc(cfg.label)}</span>`;
       $('knobs').append(button);
     } else {
       button.textContent = cfg.label.startsWith('Button ') ? SIDE_NAMES[Number(cid.slice(4)) - 1] : cfg.label;
+      button.title = button.textContent;
       $('sideBtns').append(button);
     }
     button.onclick = (e) => {
@@ -273,18 +486,13 @@ async function selectControl(cid) {
   renderBoard();
   loadEditor();
 }
-function actionOptions(search = '') {
+// Knob actions are offered only to knobs.
+const actionChoices = () => ACTIONS.filter((a) => a[2] !== 'Knob controls' || selected.startsWith('knob'));
+// The hidden <select> is the source of truth for the action; the picker below only chooses it.
+function actionOptions() {
   const value = $('actionSelect').value || draft?.action || 'none';
   const groups = new Map();
-  for (const action of ACTIONS) {
-    if (
-      search &&
-      !action[1].toLowerCase().includes(search.toLowerCase()) &&
-      !action[2].toLowerCase().includes(search.toLowerCase()) &&
-      action[0] !== value
-    )
-      continue;
-    if (action[2] === 'Knob controls' && !selected.startsWith('knob')) continue;
+  for (const action of actionChoices()) {
     if (!groups.has(action[2])) groups.set(action[2], []);
     groups.get(action[2]).push(action);
   }
@@ -304,21 +512,22 @@ function actionOptions(search = '') {
 }
 function loadEditor() {
   if (!store) return;
+  stopRecording(false);
   target = context();
   draft = clone(controls()[selected]);
   dirty = false;
   $('dirtyBadge').classList.add('hidden');
+  $('revertControl').disabled = true;
   $('selectedName').textContent = draft.label;
   $('selectedType').textContent =
-    (selected.startsWith('pad') ? 'PAD' : selected.startsWith('knob') ? 'ENCODER' : 'BUTTON') +
-    ' · BANK ' +
+    (selected.startsWith('pad') ? 'Pad' : selected.startsWith('knob') ? 'Encoder' : 'Button') +
+    ' · Bank ' +
     target.bank;
   $('selectedSwatch').style.setProperty('--color', draft.color);
   for (const [id, key] of [
     ['labelInput', 'label'],
     ['colorInput', 'color'],
     ['colorHex', 'color'],
-    ['valueInput', 'value'],
     ['audioMode', 'audioMode'],
     ['audioVolume', 'audioVolume'],
     ['trimStart', 'trimStart'],
@@ -333,10 +542,15 @@ function loadEditor() {
   $('loopAudio').checked = !!draft.loop;
   $('invertKnob').checked = !!draft.invert;
   $('accelerateKnob').checked = !!draft.acceleration;
-  $('actionSearch').value = '';
   actionOptions();
   $('actionSelect').value = draft.action;
-  $('assignedAudioName').textContent = draft.audioName || 'Drop a clip or browse';
+  actionValues = { [draft.action]: draft.value };
+  writeValueFields(draft.action, draft.value);
+  const missing = missingClips.includes(selected);
+  $('audioDrop').classList.toggle('missing', missing);
+  $('assignedAudioName').textContent = missing
+    ? 'Missing: ' + (draft.audioName || 'clip') + '. Choose another clip'
+    : draft.audioName || 'Drop a clip or browse';
   $('clipGainValue').textContent = draft.audioVolume + '%';
   $('colorFields').classList.toggle('hidden', !selected.startsWith('pad'));
   $('knobFields').classList.toggle('hidden', !selected.startsWith('knob'));
@@ -349,13 +563,41 @@ function loadEditor() {
 function markDirty() {
   dirty = true;
   $('dirtyBadge').classList.remove('hidden');
+  $('revertControl').disabled = false;
+}
+// Put a stored value into its action's fields. Each action keeps its own value while editing.
+function writeValueFields(action, value) {
+  value = String(value ?? '');
+  $('valueInput').value = action in VALUE_ACTIONS || action === 'playAudio' ? value : '';
+  $('shortcutInput').value = action === 'shortcut' ? shortcutText(value) : '';
+  // Like controller._trigger: without a "|" both directions use the same shortcut.
+  const sides = action === 'twoWayShortcutKnob' ? value.split('|') : [''];
+  $('ccwInput').value = shortcutText(sides[0].trim());
+  $('cwInput').value = shortcutText((sides[1] ?? sides[0]).trim());
+}
+// The value an action saves, read back from its fields.
+function fieldValue(action) {
+  if (action === 'shortcut') return shortcutValue($('shortcutInput').value);
+  if (action === 'twoWayShortcutKnob') {
+    const sides = [$('ccwInput').value, $('cwInput').value].map(shortcutValue);
+    return sides.some(Boolean) ? sides.join(' | ') : '';
+  }
+  return action in VALUE_ACTIONS || action === 'playAudio' ? $('valueInput').value : '';
+}
+function chooseAction(action) {
+  const previous = $('actionSelect').value;
+  if (action === previous) return;
+  actionValues[previous] = fieldValue(previous);
+  $('actionSelect').value = action;
+  writeValueFields(action, actionValues[action] ?? '');
+  markDirty();
+  renderFields();
 }
 function collect() {
   let cfg = clone(draft);
   for (const [id, key] of [
     ['labelInput', 'label'],
     ['colorInput', 'color'],
-    ['valueInput', 'value'],
     ['audioMode', 'audioMode'],
     ['encoderMode', 'encoderMode'],
     ['triggerSelect', 'trigger'],
@@ -371,6 +613,7 @@ function collect() {
   ])
     cfg[key] = Number($(id).value);
   cfg.action = $('actionSelect').value;
+  cfg.value = fieldValue(cfg.action);
   cfg.loop = $('loopAudio').checked;
   cfg.invert = $('invertKnob').checked;
   cfg.acceleration = $('accelerateKnob').checked;
@@ -378,29 +621,111 @@ function collect() {
 }
 async function saveEditor() {
   let cfg = collect();
+  const recolored = target.id.startsWith('pad') && cfg.color !== storedControl(target)?.color;
   await call('saveControl', { ...target, control: cfg });
   dirty = false;
   draft = cfg;
   await refresh();
   loadEditor();
-  toast('Control saved. Hardware colors stay staged until Apply.');
+  toast(cfg.label + ' saved' + (recolored ? '. Sync colors to light it on the controller.' : ''));
 }
 function renderFields() {
-  let action = $('actionSelect').value;
-  const needs = ['launch', 'url', 'shortcut', 'typeText', 'twoWayShortcutKnob'].includes(action);
-  $('valueField').classList.toggle('hidden', !needs);
+  const action = $('actionSelect').value;
+  $('valueField').classList.toggle('hidden', !(action in VALUE_ACTIONS));
+  $('shortcutField').classList.toggle('hidden', action !== 'shortcut');
+  $('twoWayFields').classList.toggle('hidden', action !== 'twoWayShortcutKnob');
   $('audioFields').classList.toggle('hidden', action !== 'playAudio');
   $('macroFields').classList.toggle('hidden', action !== 'macro');
   $('browseBtn').classList.toggle('hidden', action !== 'launch');
-  $('valueLabel').textContent =
-    {
-      launch: 'App or file path',
-      url: 'Website URL',
-      shortcut: 'Shortcut, such as ctrl+shift+tab',
-      typeText: 'Text to type',
-      twoWayShortcutKnob: 'Counter-clockwise | Clockwise',
-    }[action] || 'Value';
+  $('valueLabel').textContent = VALUE_ACTIONS[action]?.[0] || 'Value';
+  $('valueInput').placeholder = VALUE_ACTIONS[action]?.[1] || '';
+  $('actionMeta').textContent = label(action);
+  if (!comboOpen) $('actionPicker').value = label(action);
+  renderShortcutHelp();
   renderEditorCrop();
+}
+// Shortcuts are stored as ctrl+shift+t (see actions.shortcut) and shown as Ctrl + Shift + T.
+const shortcutValue = (text) =>
+  String(text ?? '')
+    .split('+')
+    .map((part) => part.trim().toLowerCase())
+    .join('+');
+function shortcutText(value) {
+  if (!value) return '';
+  return value
+    .split('+')
+    .map((part) => {
+      part = part.trim().toLowerCase();
+      const upper = part.toUpperCase();
+      if (Object.hasOwn(KEY_LABELS, part)) return KEY_LABELS[part];
+      return /^f\d+$/.test(part) || [...upper].length === 1 ? upper : part;
+    })
+    .join(' + ');
+}
+// Why actions.shortcut would reject a stored shortcut, or ''.
+function shortcutProblem(value) {
+  if (!value) return '';
+  for (const part of value.split('+')) {
+    if (!part) return 'Finish the shortcut, or write Plus for the + key.';
+    if (!SHORTCUT_KEYS.has(part) && [...part].length !== 1) return `Studio doesn't know the key “${part}”.`;
+  }
+  return '';
+}
+function renderShortcutHelp() {
+  const sides = [$('ccwInput').value, $('cwInput').value].map(shortcutValue);
+  for (const [id, problem] of [
+    ['shortcutHelp', shortcutProblem(shortcutValue($('shortcutInput').value))],
+    [
+      'twoWayHelp',
+      shortcutProblem(sides[0]) ||
+        shortcutProblem(sides[1]) ||
+        (sides.filter(Boolean).length === 1 ? 'Set a shortcut for both directions.' : ''),
+    ],
+  ]) {
+    $(id).textContent = problem || SHORTCUT_HINT;
+    $(id).classList.toggle('error', !!problem);
+  }
+}
+// Recording: the next key with its modifiers becomes the shortcut. Windows keeps Win-key shortcuts
+// for itself, so those are typed by hand.
+function keyName(e) {
+  if (KEY_NAMES[e.key]) return KEY_NAMES[e.key];
+  if (/^F([1-9]|1\d|2[0-4])$/.test(e.key)) return e.key.toLowerCase();
+  // Shift+1 is recorded as Shift + 1 rather than Shift + !, because Studio presses Shift itself.
+  if (e.shiftKey && /^Digit\d$/.test(e.code)) return e.code.slice(5);
+  // Letters typed on a layout without Latin letters, or with AltGr, are recorded by key position.
+  if (/^Key[A-Z]$/.test(e.code) && !/^[a-z]$/i.test(e.key)) return e.code.slice(3).toLowerCase();
+  return [...e.key].length === 1 ? e.key.toLowerCase() : null;
+}
+const heldKeys = (e) => MODIFIER_KEYS.filter((_, i) => [e.ctrlKey, e.altKey, e.shiftKey, e.metaKey][i]);
+const heldText = (held) => (held.length ? shortcutText(held.join('+')) + ' + …' : '');
+function startRecording(input, done) {
+  stopRecording(false);
+  const box = input.closest('.recorder');
+  recording = { input, box, done, previous: input.value, placeholder: input.placeholder };
+  box.classList.add('recording');
+  box.querySelector('[data-record] span').textContent = 'Cancel';
+  input.value = '';
+  input.placeholder = 'Press the keys…';
+  input.focus();
+}
+function stopRecording(keep) {
+  if (!recording) return;
+  const { input, box, done, previous, placeholder } = recording;
+  recording = null;
+  box.classList.remove('recording');
+  box.querySelector('[data-record] span').textContent = 'Record';
+  input.placeholder = placeholder;
+  if (keep) done(shortcutValue(input.value));
+  else input.value = previous;
+}
+function wireRecorder(input, done) {
+  const button = input.closest('.recorder').querySelector('[data-record]');
+  // Keep focus in the field, so clicking Cancel does not first end the recording through blur.
+  button.onmousedown = (e) => e.preventDefault();
+  button.onclick = () => (recording?.input === input ? stopRecording(false) : startRecording(input, done));
+  input.addEventListener('blur', () => recording?.input === input && stopRecording(false));
+  input.addEventListener('change', () => (input.value = shortcutText(shortcutValue(input.value))));
 }
 // The factory MIDI input of a pad (see midi.default_mapping), or null.
 function factoryMapping(bank, id) {
@@ -418,10 +743,12 @@ function renderMapping() {
   if (m) {
     $('mappingInfo').textContent =
       `${m.kind} · channel ${m.channel + 1} · number ${m.data1}\n${m.port || 'Primary performance input'}`;
+    $('physicalMeta').textContent = 'Learned';
     return;
   }
   if (!fallback) {
     $('mappingInfo').textContent = 'No physical control assigned';
+    $('physicalMeta').textContent = 'Not assigned';
     return;
   }
   // Mirrors controller.effective_mappings: a learned control elsewhere in the bank takes the factory input.
@@ -430,71 +757,226 @@ function renderMapping() {
   );
   $('mappingInfo').textContent = owner
     ? `Not assigned: note ${fallback.data1} is learned by ${owner[1].label}`
-    : `Factory default · note ${fallback.data1} · channel 10\nLearn to use a different control`;
+    : `Factory default\nnote ${fallback.data1} · channel 10\nLearn to use a different control`;
+  $('physicalMeta').textContent = owner ? 'Not assigned' : 'Factory default';
 }
-function renderSteps() {
+const STEP_TYPES = [
+  ['delay', 'Wait'],
+  ...ACTIONS.filter((a) => !['none', 'macro'].includes(a[0]) && a[2] !== 'Knob controls').map((a) => a.slice(0, 2)),
+];
+// The field for a macro step's value; actions without a value have none.
+function stepField(step, n) {
+  const value = esc(step.value || '');
+  switch (step.type) {
+    case 'delay':
+      return `<label class="step-wait"><input type="number" min="0" max="30000" step="50" value="${esc(step.milliseconds ?? 250)}" data-ms aria-label="Step ${n}: milliseconds to wait"><span>ms</span></label>`;
+    case 'shortcut':
+      return `<div class="recorder"><input value="${esc(shortcutText(step.value || ''))}" placeholder="Ctrl + C" data-keys aria-label="Step ${n}: keys to press" autocomplete="off" spellcheck="false"><button type="button" class="btn tiny" data-record title="Record keys">${icon('record')}<span class="sr-only">Record</span></button></div>`;
+    case 'launch':
+      return `<div class="row"><input class="grow" value="${value}" placeholder="Browse or paste a path" data-text aria-label="Step ${n}: app or file"><button type="button" class="btn tiny" data-browse>Browse</button></div>`;
+    case 'url':
+      return `<input inputmode="url" value="${value}" placeholder="https://example.com" data-text aria-label="Step ${n}: website address">`;
+    case 'typeText':
+      return `<input value="${value}" placeholder="The text to type" data-text aria-label="Step ${n}: text to type">`;
+    case 'playAudio':
+      return `<div class="row"><span class="step-clip grow" title="${value}">${esc(step.value ? clipName(step.value.split(/[\\/]/).pop()) : 'No clip chosen')}</span><button type="button" class="btn tiny" data-clip>Choose clip</button></div>`;
+    default:
+      return '';
+  }
+}
+// Each step remembers its value per type while editing, so trying another type loses nothing.
+const stepValues = new WeakMap();
+// focus: [step index, selectors to try in order] for the element to focus after rebuilding.
+function renderSteps(focus = null) {
   if (!draft) return;
-  $('steps').replaceChildren();
+  const list = $('steps');
+  list.replaceChildren();
+  if (!draft.steps.length)
+    list.innerHTML = '<p class="helper">No steps yet. Add a step to build a sequence of actions.</p>';
+  const count = draft.steps.length;
   for (const [index, step] of draft.steps.entries()) {
-    let el = document.createElement('div');
+    const n = index + 1;
+    const el = document.createElement('div');
     el.className = 'step';
-    let options = [
-      ['delay', 'Wait / delay'],
-      ...ACTIONS.filter((a) => a[0] !== 'none' && a[0] !== 'macro' && a[2] !== 'Knob controls').map((a) =>
-        a.slice(0, 2),
-      ),
-    ];
-    el.innerHTML = `<select aria-label="Macro step ${index + 1}">${options.map(([id, name]) => `<option value="${id}">${esc(name)}</option>`).join('')}</select><button type="button" class="btn ghost tiny" aria-label="Remove step ${index + 1}">${icon('close')}</button><input placeholder="${step.type === 'delay' ? 'Delay in milliseconds' : 'Value / shortcut / file'}" aria-label="Step value" value="${esc(step.type === 'delay' ? step.milliseconds : step.value || '')}" style="grid-column:1/-1"><div class="row" style="grid-column:1/-1"><button type="button" class="btn ghost tiny" data-up>Move up</button><button type="button" class="btn ghost tiny" data-duplicate>Duplicate</button></div>`;
-    el.querySelector('select').value = step.type;
-    el.querySelector('select').onchange = (e) => {
-      step.type = e.target.value;
-      step.milliseconds = step.milliseconds ?? 250;
+    el.innerHTML =
+      `<div class="step-main"><select aria-label="Step ${n} action">${STEP_TYPES.map(([id, name]) => `<option value="${id}">${esc(name)}</option>`).join('')}</select>${stepField(step, n)}</div>` +
+      `<div class="step-tools"><button type="button" class="icon-btn" data-move="-1" title="Move up" aria-label="Move step ${n} up"${index ? '' : ' disabled'}>${icon('up')}</button>` +
+      `<button type="button" class="icon-btn" data-move="1" title="Move down" aria-label="Move step ${n} down"${n < count ? '' : ' disabled'}>${icon('down')}</button>` +
+      `<button type="button" class="icon-btn" data-duplicate title="Duplicate" aria-label="Duplicate step ${n}">${icon('copy')}</button>` +
+      `<button type="button" class="icon-btn" data-remove title="Remove" aria-label="Remove step ${n}">${icon('close')}</button></div>`;
+    const select = el.querySelector('select');
+    select.value = step.type;
+    select.onchange = () => {
+      const memory = stepValues.get(step) || {};
+      memory[step.type] = step.value;
+      stepValues.set(step, memory);
+      step.type = select.value;
+      step.value = memory[step.type] ?? '';
+      if (step.type === 'delay') step.milliseconds = step.milliseconds ?? 250;
       markDirty();
-      renderSteps();
+      renderSteps([index, 'select']);
     };
-    el.querySelector('input').oninput = (e) => {
-      if (step.type === 'delay') step.milliseconds = Number(e.target.value);
-      else step.value = e.target.value;
-      markDirty();
-    };
-    el.querySelector('button').onclick = () => {
-      draft.steps.splice(index, 1);
-      markDirty();
-      renderSteps();
-    };
-    el.querySelector('[data-up]').onclick = () => {
-      if (index) {
-        [draft.steps[index - 1], draft.steps[index]] = [draft.steps[index], draft.steps[index - 1]];
+    el.querySelector('[data-ms]')?.addEventListener('input', (e) => (step.milliseconds = Number(e.target.value)));
+    el.querySelector('[data-text]')?.addEventListener('input', (e) => (step.value = e.target.value));
+    const keys = el.querySelector('[data-keys]');
+    if (keys) {
+      keys.addEventListener('input', () => (step.value = shortcutValue(keys.value)));
+      wireRecorder(keys, (value) => {
+        step.value = value;
         markDirty();
-        renderSteps();
-      }
-    };
+      });
+    }
+    el.querySelector('[data-browse]')?.addEventListener('click', () =>
+      safe(async () => {
+        const path = await call('browse');
+        if (!path) return;
+        step.value = path;
+        markDirty();
+        renderSteps([index, '[data-text]']);
+      }),
+    );
+    el.querySelector('[data-clip]')?.addEventListener('click', () =>
+      safe(async () => {
+        const clips = await call('chooseAudio');
+        if (!clips?.length) return;
+        step.value = clips[0].path;
+        markDirty();
+        renderSteps([index, '[data-clip]']);
+      }),
+    );
+    for (const button of el.querySelectorAll('[data-move]'))
+      button.onclick = () => {
+        const to = index + Number(button.dataset.move);
+        [draft.steps[index], draft.steps[to]] = [draft.steps[to], draft.steps[index]];
+        markDirty();
+        // Keep focus on the moved step, so the keyboard can move it again.
+        renderSteps([to, `[data-move="${button.dataset.move}"]:not(:disabled)`, '[data-move]:not(:disabled)']);
+      };
     el.querySelector('[data-duplicate]').onclick = () => {
       if (draft.steps.length >= 32) return toast('Maximum 32 steps', true);
       draft.steps.splice(index + 1, 0, clone(step));
       markDirty();
-      renderSteps();
+      renderSteps([index + 1, 'select']);
     };
-    $('steps').append(el);
+    el.querySelector('[data-remove]').onclick = () => {
+      draft.steps.splice(index, 1);
+      markDirty();
+      renderSteps([Math.min(index, draft.steps.length - 1), '[data-remove]']);
+    };
+    list.append(el);
+  }
+  if (focus) {
+    const [at, ...selectors] = focus;
+    const row = list.children[at];
+    (selectors.map((selector) => row?.querySelector(selector)).find(Boolean) || $('addStep')).focus();
   }
 }
 function renderColorState() {
   if (!draft || !state) return;
-  let sameContext = state.rgb.bank === target.bank && Number(state.rgb.preset) === Number($('rgbPreset').value);
-  let actual = sameContext ? state.rgb.colors?.[selected] : null;
-  $('colorState').textContent =
-    actual === draft.color
-      ? 'Stored on the device for Preset ' +
-        (Number($('rgbPreset').value) + 1) +
-        ', Bank ' +
-        target.bank +
-        '.' +
-        (state.rgb.activeBank && state.rgb.activeBank !== target.bank
-          ? ' Switch PAD BANK ' + (target.bank === 'B' ? 'on' : 'off') + ' to display these colors.'
-          : '')
-      : actual
-        ? 'Unsynced: physical pad is ' + actual + '. Apply to update it.'
-        : 'Local color. Read the device before applying changes.';
+  const rgb = state.rgb,
+    preset = rgb.activePreset ?? Number($('rgbPreset').value);
+  const sameContext = rgb.bank === target.bank && Number(rgb.preset) === preset;
+  const actual = sameContext ? rgb.colors?.[selected]?.toLowerCase() : null;
+  const color = String(draft.color).toLowerCase();
+  let text;
+  if (actual === color) {
+    text = 'On the controller (Preset ' + (preset + 1) + ', Bank ' + target.bank + ').';
+    if (rgb.activeBank && rgb.activeBank !== target.bank)
+      text += ' Turn PAD BANK ' + (target.bank === 'B' ? 'on' : 'off') + ' to see it.';
+  } else if (actual) text = 'Differs from the controller (' + actual + '). Sync colors to update it.';
+  else
+    text =
+      state.connection.state === 'connected'
+        ? 'Sync colors to light this pad on the controller.'
+        : 'Connect the controller to light this pad.';
+  $('colorState').textContent = text;
+  const status = actual === color ? 'On the controller' : actual ? 'Differs from the controller' : '';
+  renderOnChange(
+    $('lightMeta'),
+    [draft.color, status],
+    ([swatch, words]) => `<i class="meta-swatch" style="--color:${esc(swatch)}"></i>${esc(words)}`,
+  );
+}
+// The lighting chip: what the controller shows compared with Studio's colors for this bank.
+function lightingStatus(connected) {
+  const rgb = state.rgb;
+  if (rgb.state === 'reading') return ['Reading ' + (rgb.progress || 0) + '%', ''];
+  if (rgb.state === 'writing') return ['Syncing ' + (rgb.progress || 0) + '%', ''];
+  if (!connected || !store) return ['Not connected', ''];
+  const problem = {
+    discovering: 'Finding the controller',
+    error: 'Needs attention',
+    partial: 'Some pads failed',
+    unavailable: 'Lighting unavailable',
+    stale: 'Changed on the controller',
+  }[rgb.state];
+  if (problem) return [problem, rgb.state === 'discovering' ? '' : 'warn'];
+  const preset = rgb.activePreset ?? Number($('rgbPreset').value);
+  const colors = rgb.bank === current().activeBank && Number(rgb.preset) === preset ? rgb.colors || {} : {};
+  const pads = Object.entries(controls()).filter(([cid]) => cid.startsWith('pad'));
+  if (!pads.every(([cid]) => colors[cid])) return ['Not read yet', ''];
+  const differ = pads.filter(([cid, c]) => colors[cid].toLowerCase() !== c.color.toLowerCase()).length;
+  const where = 'Preset ' + (preset + 1) + ' · Bank ' + rgb.bank + ': ';
+  if (differ) return [where + differ + (differ === 1 ? ' pad differs' : ' pads differ'), 'warn'];
+  return [where + 'colors match', 'good'];
+}
+// Results of the last color operation, laid out like the pads on the controller (13 to 16 on top).
+function renderRgbResults(results) {
+  if (!results.length) return '';
+  const cells = results.map((r) => {
+    const n = Number(r.pad.slice(3)) - 1;
+    return `<span class="rgb-result${r.ok ? '' : ' bad'}" style="order:${(3 - Math.floor(n / 4)) * 4 + (n % 4)}" title="${esc(r.ok ? 'Stored ' + r.color : r.error)}"><i style="--color:${esc(r.ok ? r.color : 'transparent')}"></i>${esc(controlTitle(r.pad))}</span>`;
+  });
+  const failed = results
+    .filter((r) => !r.ok)
+    .map((r) => `<p class="helper error">${esc(controlTitle(r.pad))}: ${esc(r.error)}</p>`);
+  return `<div class="rgb-results">${cells.join('')}</div>${failed.join('')}`;
+}
+// Color jobs run on the controller after the request returns; state.rgb.done says how the last one ended.
+const colorJobs = new Map();
+async function colorJob(command, data, describe = () => '') {
+  colorJobs.set(await call(command, data), describe);
+}
+function renderColorJobs() {
+  const done = state.rgb.done;
+  if (!done || !colorJobs.has(done.job)) return;
+  const describe = colorJobs.get(done.job);
+  colorJobs.delete(done.job);
+  if (!done.ok) return toast(done.message, true);
+  const text = describe(done);
+  if (text) toast(text);
+}
+// A line under the top bar when the controller is unplugged, unreachable or disconnected on purpose.
+function renderBanner() {
+  const c = state.connection,
+    auto = store?.settings.autoConnect !== false;
+  let text = '',
+    tone = '',
+    actions = [];
+  if (c.state === 'error') {
+    text = "Can't reach the controller: " + c.message;
+    tone = 'error';
+    actions = [
+      ['connect', 'Try again'],
+      ['device', 'Device page'],
+    ];
+  } else if (c.state === 'disconnected' && c.reason === 'unplugged')
+    [text, actions] = auto
+      ? ['Controller unplugged. Mappings resume when it is plugged back in.', []]
+      : ['Controller unplugged.', [['connect', 'Connect']]];
+  else if (c.state === 'disconnected' && c.reason === 'manual')
+    [text, actions] = ['Disconnected. Studio stays offline until you connect again.', [['connect', 'Connect']]];
+  else if (c.state === 'disconnected' && !auto)
+    [text, actions] = ['Not connected. Automatic connection is off in Settings.', [['connect', 'Connect']]];
+  $('banner').classList.toggle('hidden', !text);
+  $('banner').classList.toggle('error', tone === 'error');
+  renderOnChange(
+    $('banner'),
+    [text, actions],
+    () =>
+      `<span class="grow">${esc(text)}</span>` +
+      actions.map(([key, name]) => `<button class="btn tiny" data-banner="${key}">${esc(name)}</button>`).join(''),
+  );
 }
 function renderLive(previous) {
   if (!state) return;
@@ -503,6 +985,8 @@ function renderLive(previous) {
   $('aboutVersion').textContent = 'SMC-PAD Studio ' + state.version;
   $('undoBtn').disabled = !state.canUndo;
   renderAutostart();
+  renderBanner();
+  renderOnboarding();
   $('connectionDot').classList.toggle('on', connected);
   $('railStatus').textContent = connected
     ? 'Background MIDI active'
@@ -510,78 +994,85 @@ function renderLive(previous) {
       ? 'Connection needs attention'
       : 'Not connected';
   $('connectBtn').querySelector('span').textContent = connected ? 'Reconnect' : 'Connect device';
-  $('canvasStatus').textContent = connected ? 'LIVE MIDI' : 'OFFLINE EDITING';
+  // The only primary button in the top bar, and only while there is something to do.
+  $('connectBtn').classList.toggle('primary', !connected);
+  $('deviceConnect').textContent = connected ? 'Reconnect' : 'Connect';
+  $('deviceConnect').classList.toggle('primary', !connected);
+  $('deviceDisconnect').disabled = !connected;
+  $('canvasStatus').textContent = connected ? 'Live' : 'Offline';
+  // Which bank the PAD BANK switch has selected, so the app and the controller are visibly in step.
+  const hardwareBank = connected ? state.rgb.activeBank : null;
+  $('hardwareBank').classList.toggle('hidden', !hardwareBank);
+  if (hardwareBank) $('hardwareBank').textContent = 'Controller: Bank ' + hardwareBank;
+  for (const b of 'AB') $('bank' + b).classList.toggle('on-controller', hardwareBank === b);
   $('canvasStatus').className = 'tag' + (connected ? ' good' : '');
-  $('deviceStatusTag').textContent = state.connection.state.toUpperCase();
+  $('deviceStatusTag').textContent = state.connection.state[0].toUpperCase() + state.connection.state.slice(1);
   $('deviceStatusTag').className = 'tag' + (connected ? ' good' : ' warn');
   $('deviceMessage').textContent = state.connection.message;
   $('pauseBtn').querySelector('span').textContent = state.paused ? 'Resume mappings' : 'Pause mappings';
   $('pauseBtn').classList.toggle('danger', state.paused);
   $('footerStatus').textContent = state.paused ? 'Mappings paused — audio remains available' : state.connection.message;
   $('audioCount').textContent = state.audio.players.length + ' clip' + (state.audio.players.length === 1 ? '' : 's');
-  $('playingCount').textContent = state.audio.players.length + ' PLAYING';
+  $('playingCount').textContent = state.audio.players.length + ' playing';
   if (state.midi) {
     $('lastMidiValue').textContent = state.midi.kind.toUpperCase() + ' ' + state.midi.value;
     $('lastMidiPort').textContent = state.midi.port + ' · Ch ' + state.midi.channel;
   }
-  let rgb = state.rgb;
-  $('rgbStatus').textContent =
-    rgb.state === 'reading'
-      ? 'Reading ' + (rgb.progress || 0) + '%'
-      : rgb.state === 'writing'
-        ? 'Applying ' + (rgb.progress || 0) + '%'
-        : {
-            notRead: 'Not read',
-            synced: 'Stored on device',
-            partial: 'Partial / failed',
-            available: 'Ready to read',
-            unavailable: 'Unavailable',
-            error: 'Needs attention',
-            discovering: 'Finding port',
-            stale: 'Changed on device',
-            saved: 'Saved to device',
-          }[rgb.state] || rgb.state;
+  const rgb = state.rgb,
+    busy = ['discovering', 'reading', 'writing'].includes(rgb.state);
+  const [status, tone] = lightingStatus(connected);
+  for (const id of ['rgbStatus', 'deviceRgbStatus']) {
+    $(id).textContent = status;
+    $(id).className = 'tag' + (tone ? ' ' + tone : '');
+  }
+  $('cancelRGB').classList.toggle('hidden', !['reading', 'writing'].includes(rgb.state));
   // Confirming a preset by eye is only needed when the device does not report it.
   let asked = rgb.activePreset == null ? rgb.identified : null;
   $('identifyConfirm').classList.toggle('hidden', !asked);
   $('confirmPresetBar').classList.toggle('hidden', !asked);
   if (asked) $('identifyQuestion').textContent = 'Did all 16 pads flash white for Preset ' + (asked.preset + 1) + '?';
+  // Picking the preset by hand is only needed while the controller does not report it.
+  $('rgbPreset').classList.toggle('hidden', !connected || rgb.activePreset != null);
   $('rgbPreset').disabled = rgb.activePreset != null;
   if (rgb.activePreset != null) $('rgbPreset').value = String(rgb.activePreset);
   $('presetDetect').textContent = rgb.presetDetection?.located
     ? 'Auto-detect is on' +
-      (rgb.activePreset != null ? ': the hardware is on Preset ' + (rgb.activePreset + 1) + '.' : '.')
-    : 'Connect the device to detect its active preset.';
-  $('deviceSave').disabled = !connected || ['discovering', 'reading', 'writing'].includes(rgb.state);
-  $('rgbStatus').className =
-    'tag' +
-    (['synced', 'saved'].includes(rgb.state)
-      ? ' good'
-      : ['error', 'partial', 'unavailable', 'stale'].includes(rgb.state)
-        ? ' warn'
-        : '');
-  for (const id of ['identifyRGB', 'deviceIdentify'])
-    $(id).disabled = !connected || ['discovering', 'reading', 'writing'].includes(rgb.state);
-  $('applyRGB').disabled = !connected || ['discovering', 'reading', 'writing'].includes(rgb.state);
-  $('readRGB').disabled = !connected || ['discovering', 'reading', 'writing'].includes(rgb.state);
-  renderOnChange($('rgbResults'), rgb.results || [], (results) =>
-    results
-      .map(
-        (r) =>
-          `<p class="helper" style="color:${r.ok ? 'var(--accent)' : 'var(--danger)'}">${esc(controlTitle(r.pad))} · ${r.ok ? 'Stored ' + esc(r.color) : esc(r.error)}</p>`,
-      )
-      .join(''),
+      (rgb.activePreset != null ? ': the controller is on Preset ' + (rgb.activePreset + 1) + '.' : '.')
+    : 'Connect the controller to detect its active preset.';
+  for (const id of ['applyRGB', 'deviceApply', 'readRGB', 'deviceRead', 'identifyRGB', 'deviceIdentify', 'deviceSave'])
+    $(id).disabled = !connected || busy;
+  // Using the controller's colors needs a read of this bank first.
+  const readHere = !!store && rgb.bank === current().activeBank && Object.keys(rgb.colors || {}).length > 0;
+  for (const id of ['adoptRGB', 'adoptRGBBar']) $(id).disabled = !readHere || busy;
+  const keep = store?.settings.saveOnSync !== false;
+  $('deviceSave').classList.toggle('hidden', keep);
+  $('syncSaveNote').textContent = keep
+    ? "Sync colors also saves them to the controller's memory, so they stay after unplugging. You can change this in Settings."
+    : "Sync colors does not save them to the controller's memory (see Settings), so they may reset when it is unplugged. Save to controller memory keeps them.";
+  renderOnChange($('rgbResults'), rgb.results || [], renderRgbResults);
+  const health = [
+    ['MIDI', state.connection.state[0].toUpperCase() + state.connection.state.slice(1)],
+    ['Pad lighting', status],
+    ['Dropped MIDI messages', String(state.droppedMidi)],
+    ['Audio', state.audio.error || 'Ready'],
+  ];
+  renderOnChange(
+    $('healthInfo'),
+    health,
+    (rows) => `<dl class="health">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>`,
   );
-  $('healthInfo').textContent =
-    `MIDI: ${state.connection.state}. RGB: ${rgb.state}. Dropped MIDI events: ${state.droppedMidi}. Audio: ${state.audio.error || 'ready on demand'}.`;
+  renderColorJobs();
   renderPlayingPads();
   renderMixer();
   renderColorState();
   if (draft) {
     let cal = state.calibration[selected];
     if (cal) $('calibration').textContent = `Raw ${cal.raw} · delta ${cal.delta}\n${cal.port} · ${cal.mode}`;
-    let waiting = state.learning && state.learning.id === selected;
-    $('learnBtn').innerHTML = icon('link') + (waiting ? 'Waiting… click to cancel' : 'Learn physical control');
+    let waiting = sameControl(state.learning, target);
+    renderOnChange($('learnBtn'), waiting, (on) => icon('link') + (on ? 'Cancel learning' : 'Learn'));
+    $('learnHint').textContent = waiting
+      ? 'Waiting for your SMC-PAD: press or turn the control. Esc cancels.'
+      : 'Press Learn, then press or turn a control on your SMC-PAD.';
     for (let el of document.querySelectorAll('[data-id]'))
       el.classList.toggle('learning', waiting && el.dataset.id === selected);
   }
@@ -600,7 +1091,7 @@ function renderLive(previous) {
       )
       .join(''),
   );
-  $('diagnosticCount').textContent = state.logs.length + ' EVENTS';
+  $('diagnosticCount').textContent = state.logs.length + (state.logs.length === 1 ? ' event' : ' events');
   if (previous?.rgb?.state !== rgb.state && rgb.state === 'partial')
     toast('Some pad colors were not applied. See Device for individual results.', true);
 }
@@ -643,20 +1134,19 @@ function renderAutostart() {
     ? 'Opens quietly in the tray, so your pads work as soon as the controller is plugged in.'
     : 'Available in the SMC-PAD Studio EXE. When running from source, start it yourself.';
 }
+// The small line on a pad: what it does, or that it is playing or has lost its clip.
+function padType(cid, cfg, playing) {
+  if (playing) return cfg.loop ? 'Looping' : 'Playing';
+  if (missingClips.includes(cid)) return 'Missing clip';
+  return cfg.action === 'none' ? 'Unassigned' : label(cfg.action);
+}
 function renderPlayingPads() {
   if (!state) return;
   let playing = new Set(state.audio.players.map((p) => p.control));
   for (const el of document.querySelectorAll('.pad')) {
     el.classList.toggle('playing', playing.has(el.dataset.id));
     let cfg = store ? controls()[el.dataset.id] : null;
-    if (cfg)
-      el.querySelector('.pad-type').textContent = playing.has(el.dataset.id)
-        ? cfg.loop
-          ? 'LOOPING'
-          : 'PLAYING'
-        : cfg.action === 'none'
-          ? 'UNASSIGNED'
-          : label(cfg.action);
+    if (cfg) el.querySelector('.pad-type').textContent = padType(el.dataset.id, cfg, playing.has(el.dataset.id));
   }
 }
 function renderMixer() {
@@ -687,7 +1177,7 @@ function renderMixer() {
   for (const p of players) {
     const row = list.querySelector(`[data-player="${CSS.escape(p.id)}"]`);
     if (!row) continue;
-    row.querySelector('[data-loop]').textContent = p.loop ? 'LOOP' : 'PLAYING';
+    row.querySelector('[data-loop]').textContent = p.loop ? 'Loop' : 'Playing';
     row.querySelector('[data-progress]').style.width = position(p) + '%';
     row.querySelector('[data-time]').textContent = `${p.position.toFixed(1)} / ${p.end.toFixed(1)} seconds`;
     const gain = row.querySelector('[data-gain]');
@@ -708,9 +1198,9 @@ function renderPorts() {
     );
   }
   $('portList').innerHTML =
-    '<h3>INPUTS</h3>' +
+    '<h3>Inputs</h3>' +
     state.ports.inputs.map((p) => esc(p.id + ' · ' + p.name)).join('<br>') +
-    '<hr class="section-rule"><h3>OUTPUTS</h3>' +
+    '<hr class="section-rule"><h3>Outputs</h3>' +
     state.ports.outputs.map((p) => esc(p.id + ' · ' + p.name)).join('<br>');
 }
 async function showView(next) {
@@ -720,25 +1210,47 @@ async function showView(next) {
     $('view-' + name).classList.toggle('hidden', name !== view);
   for (let button of document.querySelectorAll('[data-view]'))
     button.classList.toggle('active', button.dataset.view === view);
-  $('breadcrumb').textContent = view[0].toUpperCase() + view.slice(1);
+  $('viewTitle').textContent = VIEWS[view][0];
+  $('viewDescription').textContent = VIEWS[view][1];
   if (view === 'soundboard') await loadLibrary();
 }
 async function loadLibrary() {
   library = await call('library');
+  if (chosenClip) chosenClip = library.find((c) => c.path === chosenClip.path) || null;
   renderLibrary();
+  if (!chosenClip) $('clipDetail').innerHTML = '<div class="empty">Select a clip to preview or assign it.</div>';
+}
+// A clip's length as m:ss.
+function clipLength(seconds) {
+  const s = Math.round(seconds);
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+const fileSize = (bytes) =>
+  bytes < 1048576 ? Math.max(1, Math.round(bytes / 1024)) + ' KB' : (bytes / 1048576).toFixed(1) + ' MB';
+const clipFacts = (c) => [c.duration ? clipLength(c.duration) : null, fileSize(c.size)].filter(Boolean).join(' · ');
+// Where a clip is used, e.g. "Pad 3 (macro step) · Page 1, Bank A".
+const useText = (u) =>
+  `${u.control}${u.step ? ' (macro step)' : ''} · ${u.page}, Bank ${u.bank}` +
+  (store && u.profile !== current().name ? ' · ' + u.profile : '');
+function usedSummary(uses = []) {
+  if (!uses.length) return 'Not used yet';
+  return 'Used by ' + uses[0].control + (uses.length > 1 ? ' and ' + (uses.length - 1) + ' more' : '');
 }
 function renderLibrary() {
   let query = $('librarySearch').value.toLowerCase();
   let list = library.filter((c) => c.name.toLowerCase().includes(query));
-  $('libraryCount').textContent = library.length + ' CLIPS';
+  $('libraryCount').textContent = library.length + (library.length === 1 ? ' clip' : ' clips');
   $('libraryList').innerHTML = list.length
     ? list
         .map(
           (c) =>
-            `<article class="clip${chosenClip?.path === c.path ? ' selected' : ''}" data-clip="${esc(c.path)}"><div class="clip-icon">${icon('audio')}</div><div class="grow" style="flex:1;min-width:0"><div class="clip-name">${esc(c.name)}</div><div class="clip-details">${(c.size / 1048576).toFixed(1)} MB · ${c.duration ? c.duration.toFixed(1) + ' seconds' : 'Ready to preview'}</div></div><button class="btn ghost tiny" data-preview aria-label="Preview ${esc(c.name)}">${icon('play')}</button><button class="btn tiny" data-select>Details</button></article>`,
+            `<article class="clip${chosenClip?.path === c.path ? ' selected' : ''}" data-clip="${esc(c.path)}"><div class="clip-icon">${icon('audio')}</div><div class="grow" style="flex:1;min-width:0"><div class="clip-name">${esc(c.name)}</div><div class="clip-details">${esc(clipFacts(c))} · ${esc(usedSummary(c.usedBy))}</div></div><button class="btn ghost tiny" data-preview aria-label="Preview ${esc(c.name)}">${icon('play')}</button><button class="btn tiny" data-select>Details</button></article>`,
         )
         .join('')
-    : `<div class="panel empty">${icon('audio')}<p>${query ? 'No clips match your search.' : 'Import a clip to build your soundboard.'}</p></div>`;
+    : `<div class="panel empty">${icon('audio')}<p>${query ? 'No clips match your search.' : 'No clips yet. Import audio files, or paste a YouTube link above.'}</p>${query ? '' : `<button class="btn" data-empty-import>${icon('plus')}Import clips</button>`}</div>`;
+  $('libraryList')
+    .querySelector('[data-empty-import]')
+    ?.addEventListener('click', () => $('importClips').click());
   for (let el of $('libraryList').querySelectorAll('[data-clip]')) {
     let clip = list.find((c) => c.path === el.dataset.clip);
     el.querySelector('[data-preview]').onclick = () => safe(() => call('previewAudio', { path: clip.path }));
@@ -753,7 +1265,7 @@ function renderClipDetail() {
   if (!chosenClip) return;
   let c = chosenClip;
   $('clipDetail').innerHTML =
-    `<div class="clip-icon" style="width:52px;height:52px;margin-bottom:16px">${icon('audio')}</div><h2 style="overflow-wrap:anywhere">${esc(c.name)}</h2><p class="muted">${(c.size / 1048576).toFixed(1)} MB · Windows default output</p><div class="row" style="margin-top:16px"><button class="btn primary" id="detailPreview">${icon('play')}Preview</button><button class="btn" id="detailInspect">Details</button></div><hr class="section-rule"><div class="field"><label id="detailCropLabel">Crop · drag the handles or the highlighted part</label><div id="detailCrop" role="group" aria-labelledby="detailCropLabel"></div></div><div class="row" style="flex-wrap:wrap"><button class="btn tiny" id="previewSelection">${icon('play')}Preview selection</button><button class="btn tiny" id="saveCrop">Save as new clip</button></div><p class="helper">Assign uses only the selected part. Save as new clip writes a separate cropped file to your library.</p><hr class="section-rule"><div class="field"><label for="assignPad">Assign to a pad in this bank</label><select id="assignPad">${Array.from({ length: 16 }, (_, i) => `<option value="pad${i + 1}"${selected === 'pad' + (i + 1) ? ' selected' : ''}>Pad ${i + 1} · ${esc(controls()['pad' + (i + 1)].label)}</option>`).join('')}</select></div><button class="btn" id="assignClip">Assign clip</button><p class="helper" id="clipMetadata"></p>`;
+    `<div class="clip-icon" style="width:52px;height:52px;margin-bottom:16px">${icon('audio')}</div><h2 style="overflow-wrap:anywhere">${esc(c.name)}</h2><p class="muted">${esc(clipFacts(c))}</p><div class="row wrap" style="margin-top:16px"><button class="btn primary" id="detailPreview">${icon('play')}Preview</button><button class="btn tiny" id="detailRename">Rename</button><button class="btn tiny danger" id="detailRemove">Remove</button></div><hr class="section-rule"><h3>Used by</h3>${c.usedBy?.length ? `<ul class="use-list">${c.usedBy.map((u) => `<li>${esc(useText(u))}</li>`).join('')}</ul>` : '<p class="helper">No pad plays this clip yet.</p>'}<hr class="section-rule"><div class="field"><label id="detailCropLabel">Crop · drag the handles or the highlighted part</label><div id="detailCrop" role="group" aria-labelledby="detailCropLabel"></div></div><div class="row" style="flex-wrap:wrap"><button class="btn tiny" id="previewSelection">${icon('play')}Preview selection</button><button class="btn tiny" id="saveCrop">Save as new clip</button></div><p class="helper">Assign uses only the selected part. Save as new clip writes a separate cropped file to your library.</p><hr class="section-rule"><div class="field"><label for="assignPad">Assign to a pad in this bank</label><select id="assignPad">${Array.from({ length: 16 }, (_, i) => `<option value="pad${i + 1}"${selected === 'pad' + (i + 1) ? ' selected' : ''}>Pad ${i + 1} · ${esc(controls()['pad' + (i + 1)].label)}</option>`).join('')}</select></div><button class="btn" id="assignClip">Assign clip</button>`;
   const crop = cropper($('detailCrop'), c.path, 0, 0);
   $('detailPreview').onclick = () => safe(() => call('previewAudio', { path: c.path }));
   $('previewSelection').onclick = () =>
@@ -767,10 +1279,35 @@ function renderClipDetail() {
       renderClipDetail();
       toast('Saved ' + clip.name);
     });
-  $('detailInspect').onclick = () =>
+  $('detailRename').onclick = () =>
     safe(async () => {
-      let info = await call('inspectAudio', { path: c.path });
-      $('clipMetadata').textContent = info.duration.toFixed(2) + ' seconds';
+      const name = await nameDialog('Rename clip', c.name.replace(/\.[^.]+$/, ''));
+      if (!name) return;
+      const clip = await call('renameClip', { path: c.path, name });
+      chosenClip = { ...c, path: clip.path };
+      await loadLibrary();
+      await refresh();
+      renderClipDetail();
+      toast('Renamed to ' + clip.name);
+    });
+  $('detailRemove').onclick = () =>
+    safe(async () => {
+      const uses = c.usedBy || [];
+      const body =
+        `<p class="muted">${esc(c.name)} goes to the Windows Recycle Bin, so you can restore it from there.</p>` +
+        (uses.length
+          ? `<p class="helper">${uses.length === 1 ? 'This control uses it' : 'These controls use it'} and will show a missing clip:</p><ul class="use-list">${uses.map((u) => `<li>${esc(useText(u))}</li>`).join('')}</ul>`
+          : '');
+      const confirmed = await modal('Remove this clip?', body, [
+        { label: 'Keep clip', value: null },
+        { label: 'Move to Recycle Bin', value: true },
+      ]);
+      if (!confirmed) return;
+      await call('removeClip', { path: c.path });
+      chosenClip = null;
+      await loadLibrary();
+      await refresh();
+      toast(c.name + ' moved to the Recycle Bin');
     });
   $('assignClip').onclick = () =>
     safe(async () => {
@@ -788,11 +1325,16 @@ function renderClipDetail() {
 function renderProfiles() {
   if (!store) return;
   let query = $('profileSearch').value.toLowerCase();
-  $('profilesGrid').innerHTML = store.profiles
-    .filter((p) => p.name.toLowerCase().includes(query))
+  const shown = store.profiles.filter((p) => p.name.toLowerCase().includes(query));
+  if (!shown.length) {
+    $('profilesGrid').innerHTML =
+      `<div class="panel empty">${icon('search')}<p>No profiles match your search.</p></div>`;
+    return;
+  }
+  $('profilesGrid').innerHTML = shown
     .map(
       (p) =>
-        `<article class="profile-card${p.id === store.activeProfile ? ' active' : ''}"><div class="row"><svg style="color:var(--accent)"><use href="#i-layers"/></svg><div class="spacer"></div><span class="tag${p.id === store.activeProfile ? ' good' : ''}">${p.id === store.activeProfile ? 'ACTIVE' : 'PROFILE'}</span></div><h2>${esc(p.name)}</h2><p class="muted">${p.pages.length} page${p.pages.length === 1 ? '' : 's'} · Banks A–H</p><div class="profile-colors">${Object.values(
+        `<article class="profile-card${p.id === store.activeProfile ? ' active' : ''}"><div class="row"><svg style="color:var(--accent)"><use href="#i-layers"/></svg><div class="spacer"></div><span class="tag${p.id === store.activeProfile ? ' good' : ''}">${p.id === store.activeProfile ? 'Active' : 'Profile'}</span></div><h2>${esc(p.name)}</h2><p class="muted">${p.pages.length} page${p.pages.length === 1 ? '' : 's'}</p><div class="profile-colors">${Object.values(
           p.pages[0].banks.A,
         )
           .slice(0, 8)
@@ -827,6 +1369,7 @@ function modal(title, body, choices = null) {
     $('modalAccept').onclick = () =>
       close(choices?.[1]?.value ?? ($('modalBody').querySelector('input')?.value || true));
     window.closeStudioModal = () => close(null);
+    window.resolveStudioModal = (value) => close(value);
   });
 }
 async function nameDialog(title, initial = '') {
@@ -848,25 +1391,68 @@ function connect() {
 function rgbContext() {
   return { ...context(), preset: state?.rgb?.activePreset ?? Number($('rgbPreset').value) };
 }
-async function importForEditor(paths = null) {
-  const captured = clone(target);
-  const capturedControl = collect();
-  const values = await call(paths ? 'importAudio' : 'chooseAudio', paths ? { paths } : {});
-  if (!values?.length) return;
-  const value = values[0];
-  let cfg = capturedControl;
-  cfg.action = 'playAudio';
-  cfg.value = value.path;
-  cfg.audioName = value.name;
-  cfg.trimStart = 0;
-  cfg.trimEnd = 0;
+// Give the captured control a clip and save it with the edits it had; reload the editor if it still shows it.
+async function assignEditorClip(captured, cfg, clip) {
+  Object.assign(cfg, { action: 'playAudio', value: clip.path, audioName: clip.name, trimStart: 0, trimEnd: 0 });
   await call('saveControl', { ...captured, control: cfg });
   if (JSON.stringify(target) === JSON.stringify(captured)) {
     dirty = false;
     await refresh();
     loadEditor();
   } else await refresh();
-  toast('Clip assigned to ' + capturedControl.label);
+  toast(clip.name + ' assigned to ' + cfg.label + (clip.existing ? ' (already in your library)' : ''));
+}
+async function importForEditor(paths = null) {
+  const captured = clone(target);
+  const capturedControl = collect();
+  const values = await call(paths ? 'importAudio' : 'chooseAudio', paths ? { paths } : {});
+  if (!values?.length) return;
+  await assignEditorClip(captured, capturedControl, values[0]);
+}
+// Pick a clip from the library without leaving the editor.
+async function chooseFromLibrary() {
+  const captured = clone(target);
+  const capturedControl = collect();
+  const clips = await call('library');
+  const rows = clips
+    .map(
+      (c) =>
+        `<div class="pick-row" data-name="${esc(c.name.toLowerCase())}"><button type="button" class="pick-choose" data-choose="${esc(c.path)}"><span class="clip-name">${esc(c.name)}</span><span class="clip-details">${esc(clipFacts(c))} · ${esc(usedSummary(c.usedBy))}</span></button><button type="button" class="btn ghost tiny" data-preview="${esc(c.path)}" aria-label="Preview ${esc(c.name)}">${icon('play')}</button></div>`,
+    )
+    .join('');
+  const answer = modal(
+    'Choose a clip',
+    clips.length
+      ? `<div class="field"><label for="pickSearch">Search your library</label><input id="pickSearch" type="search" placeholder="Clip name" autocomplete="off"></div><div class="pick-list">${rows}</div><p class="helper hidden" id="pickNone">No clips match your search.</p>`
+      : '<p class="muted">Your library is empty. Import a clip to get started.</p>',
+    [
+      { label: 'Cancel', value: null },
+      { label: 'Import new clips', value: 'import' },
+    ],
+  );
+  const body = $('modalBody');
+  body.querySelector('#pickSearch')?.addEventListener('input', (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    let shown = 0;
+    for (const row of body.querySelectorAll('.pick-row')) {
+      row.classList.toggle('hidden', !row.dataset.name.includes(q));
+      shown += !row.classList.contains('hidden');
+    }
+    $('pickNone').classList.toggle('hidden', shown > 0);
+  });
+  body.querySelector('#pickSearch')?.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    body.querySelector('.pick-row:not(.hidden) [data-choose]')?.click();
+  });
+  for (const button of body.querySelectorAll('[data-choose]'))
+    button.onclick = () => window.resolveStudioModal(button.dataset.choose);
+  for (const button of body.querySelectorAll('[data-preview]'))
+    button.onclick = () => safe(() => call('previewAudio', { path: button.dataset.preview }));
+  const choice = await answer;
+  if (choice === 'import') return importForEditor();
+  const clip = clips.find((c) => c.path === choice);
+  if (clip) await assignEditorClip(captured, capturedControl, clip);
 }
 async function dropFiles(event) {
   event.preventDefault();
@@ -1123,8 +1709,8 @@ function renderDownload() {
   if (d.assign && target && dirty && JSON.stringify(d.assign) === JSON.stringify(target)) {
     draft.value = d.clip.path;
     draft.audioName = d.clip.name;
+    chooseAction('playAudio');
     $('valueInput').value = d.clip.path;
-    $('actionSelect').value = 'playAudio';
     $('assignedAudioName').textContent = d.clip.name;
     $('trimStart').value = 0;
     $('trimEnd').value = 0;
@@ -1142,17 +1728,166 @@ $('editorForm').onsubmit = (e) => {
   safe(saveEditor);
 };
 $('editorForm').addEventListener('input', (e) => {
-  if (['actionSearch', 'ytEditorUrl'].includes(e.target.id)) return;
+  if (['actionPicker', 'ytEditorUrl'].includes(e.target.id)) return;
   markDirty();
 });
 $('editorForm').addEventListener('change', (e) => {
-  if (!['actionSearch', 'ytEditorUrl'].includes(e.target.id)) markDirty();
+  if (!['actionPicker', 'ytEditorUrl'].includes(e.target.id)) markDirty();
 });
-$('actionSearch').oninput = () => actionOptions($('actionSearch').value);
-$('actionSelect').onchange = () => {
-  markDirty();
-  renderFields();
+// Action picker: a combobox that filters as you type; arrows move, Enter chooses, Escape closes.
+function renderCombo(query = '') {
+  const q = query.trim().toLowerCase();
+  const chosen = $('actionSelect').value;
+  const groups = new Map();
+  for (const item of actionChoices())
+    if (!q || item[1].toLowerCase().includes(q) || item[2].toLowerCase().includes(q)) {
+      if (!groups.has(item[2])) groups.set(item[2], []);
+      groups.get(item[2]).push(item);
+    }
+  comboItems = [...groups.values()].flat();
+  let index = 0;
+  $('actionList').innerHTML = comboItems.length
+    ? [...groups]
+        .map(
+          ([group, items], g) =>
+            `<div role="group" aria-labelledby="actionGroup${g}"><div class="combo-group" id="actionGroup${g}" role="presentation">${esc(group)}</div>${items
+              .map(
+                ([id, text]) =>
+                  `<div class="combo-option" role="option" id="actionOption${index}" data-index="${index++}" aria-selected="${id === chosen}"><span>${esc(text)}</span>${id === chosen ? icon('check') : ''}</div>`,
+              )
+              .join('')}</div>`,
+        )
+        .join('')
+    : '<div class="combo-empty">No actions match. Try another word.</div>';
+  setComboActive(q ? (comboItems.length ? 0 : -1) : comboItems.findIndex((a) => a[0] === chosen));
+}
+function setComboActive(index) {
+  comboActive = index;
+  let active = null;
+  for (const option of $('actionList').querySelectorAll('[role="option"]')) {
+    option.classList.toggle('active', Number(option.dataset.index) === index);
+    if (Number(option.dataset.index) === index) active = option;
+  }
+  if (!active) return $('actionPicker').removeAttribute('aria-activedescendant');
+  $('actionPicker').setAttribute('aria-activedescendant', active.id);
+  // Scroll the list only (not the page); the first option of a group brings its heading along.
+  const list = $('actionList');
+  const heading = active.previousElementSibling?.classList.contains('combo-group')
+    ? active.previousElementSibling
+    : null;
+  const top = (heading || active).offsetTop,
+    bottom = active.offsetTop + active.offsetHeight;
+  if (top < list.scrollTop) list.scrollTop = top;
+  else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight;
+}
+function openCombo(query = '') {
+  comboOpen = true;
+  $('actionList').classList.remove('hidden');
+  $('actionPicker').setAttribute('aria-expanded', 'true');
+  renderCombo(query);
+}
+function closeCombo() {
+  if (!comboOpen) return;
+  comboOpen = false;
+  $('actionList').classList.add('hidden');
+  $('actionPicker').setAttribute('aria-expanded', 'false');
+  $('actionPicker').removeAttribute('aria-activedescendant');
+  $('actionPicker').value = label($('actionSelect').value);
+}
+function pickAction(index) {
+  const item = comboItems[index];
+  closeCombo();
+  if (item) chooseAction(item[0]);
+}
+$('actionPicker').onclick = () => {
+  if (comboOpen) return closeCombo();
+  openCombo();
+  $('actionPicker').select();
 };
+$('actionPicker').oninput = () => openCombo($('actionPicker').value);
+$('actionPicker').onblur = closeCombo;
+$('actionPicker').onkeydown = (e) => {
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (!comboOpen) return openCombo();
+    const count = comboItems.length,
+      step = e.key === 'ArrowDown' ? 1 : -1;
+    if (count) setComboActive(((comboActive < 0 ? (step > 0 ? -1 : count) : comboActive) + step + count) % count);
+  } else if (e.key === 'Enter') {
+    // Enter chooses an action here; it does not submit (save) the form.
+    e.preventDefault();
+    if (!comboOpen) openCombo();
+    else if (comboActive >= 0) pickAction(comboActive);
+  } else if (e.key === 'Escape' && comboOpen) {
+    e.preventDefault();
+    e.stopPropagation();
+    closeCombo();
+    $('actionPicker').select();
+  }
+};
+// Clicks in the list keep focus in the picker, so blur does not close it first.
+$('actionList').onmousedown = (e) => e.preventDefault();
+$('actionList').onclick = (e) => {
+  const option = e.target.closest('[role="option"]');
+  if (option) pickAction(Number(option.dataset.index));
+};
+$('actionList').onmousemove = (e) => {
+  const option = e.target.closest('[role="option"]');
+  if (option && Number(option.dataset.index) !== comboActive) setComboActive(Number(option.dataset.index));
+};
+// Shortcut fields: Record captures the next key press; typing by hand works too.
+for (const id of ['shortcutInput', 'ccwInput', 'cwInput']) {
+  wireRecorder($(id), () => {
+    markDirty();
+    renderShortcutHelp();
+  });
+  $(id).addEventListener('input', renderShortcutHelp);
+}
+window.addEventListener(
+  'keydown',
+  (e) => {
+    if (!recording) return;
+    // While recording, keys go to the recorder only: Ctrl+S records Ctrl + S instead of saving.
+    e.preventDefault();
+    e.stopPropagation();
+    const held = heldKeys(e),
+      key = keyName(e);
+    if (e.key === 'Escape' && !held.length) return stopRecording(false);
+    if (key && !MODIFIER_KEYS.includes(key)) {
+      recording.input.value = shortcutText([...held, key].join('+'));
+      return stopRecording(true);
+    }
+    recording.input.value = heldText(held);
+  },
+  true,
+);
+window.addEventListener(
+  'keyup',
+  (e) => {
+    if (!recording) return;
+    e.preventDefault();
+    e.stopPropagation();
+    recording.input.value = heldText(heldKeys(e));
+  },
+  true,
+);
+$('revertControl').onclick = () => {
+  loadEditor();
+  toast('Changes discarded');
+};
+// Which editor sections are open is kept in settings: pages loaded into WebView2 have no browser storage.
+const editorSections = () => [...document.querySelectorAll('#editorForm [data-section]')];
+function applySections(saved) {
+  for (const section of editorSections()) section.open = saved?.[section.dataset.section] !== false;
+}
+for (const section of editorSections())
+  section.addEventListener('toggle', () => {
+    if (!store) return;
+    const open = Object.fromEntries(editorSections().map((s) => [s.dataset.section, s.open]));
+    if (JSON.stringify(open) === JSON.stringify(store.settings.editorSections)) return;
+    store.settings.editorSections = open;
+    call('editorSections', open).catch(() => {});
+  });
 $('audioVolume').oninput = () => ($('clipGainValue').textContent = $('audioVolume').value + '%');
 $('colorInput').oninput = () => {
   $('colorHex').value = $('colorInput').value;
@@ -1191,7 +1926,7 @@ $('browseBtn').onclick = () =>
       markDirty();
     }
   });
-$('learnBtn').onclick = () => safe(() => call(state?.learning ? 'cancelLearn' : 'learn', target));
+$('learnBtn').onclick = () => safe(() => call(sameControl(state?.learning, target) ? 'cancelLearn' : 'learn', target));
 $('clearLearn').onclick = () => {
   draft.mapping = null;
   markDirty();
@@ -1202,7 +1937,7 @@ $('copySelected').onclick = () =>
   safe(async () => {
     await saveEditor();
     await mutate('copyControls', { ...target, source: selected, ids: [...multi].filter((id) => id !== selected) });
-    toast('Configuration copied; MIDI assignments preserved');
+    toast('Configuration copied. MIDI assignments are kept.', false, undoAction('Copy configuration'));
   });
 $('audioDrop').onclick = () => safe(() => importForEditor());
 for (const ev of ['dragenter', 'dragover'])
@@ -1213,7 +1948,7 @@ for (const ev of ['dragenter', 'dragover'])
 $('audioDrop').addEventListener('dragleave', () => $('audioDrop').classList.remove('drag'));
 $('audioDrop').addEventListener('drop', (e) => safe(() => dropFiles(e)));
 $('previewClip').onclick = () => safe(() => call('previewAudio', { control: collect() }));
-$('selectFromLibrary').onclick = () => safe(() => showView('soundboard'));
+$('selectFromLibrary').onclick = () => safe(chooseFromLibrary);
 $('addStep').onclick = () => {
   if (draft.steps.length >= 32) return toast('Maximum 32 steps', true);
   draft.steps.push({ type: 'delay', milliseconds: 250, value: '' });
@@ -1236,24 +1971,33 @@ $('macroPreview').onclick = () =>
   });
 $('cancelMacros').onclick = () => safe(() => call('cancelActions'));
 for (const id of ['connectBtn', 'deviceConnect']) $(id).onclick = () => safe(connect);
+$('banner').onclick = (e) => {
+  const button = e.target.closest('[data-banner]');
+  if (button) safe(() => (button.dataset.banner === 'connect' ? connect() : showView('device')));
+};
 $('deviceDisconnect').onclick = () => safe(() => call('disconnect'));
 $('refreshPorts').onclick = () =>
   safe(async () => {
     await call('refresh');
     await refresh();
   });
-for (const id of ['readRGB', 'deviceRead']) $(id).onclick = () => safe(() => call('readRGB', rgbContext()));
+for (const id of ['readRGB', 'deviceRead']) $(id).onclick = () => safe(() => colorJob('readRGB', rgbContext()));
+// Sync colors: the bank's pads that differ are written; the setting decides whether they are also saved.
 for (const id of ['applyRGB', 'deviceApply'])
   $(id).onclick = () =>
     safe(async () => {
       if (dirty) await saveEditor();
-      await call('applyRGB', {
-        ...rgbContext(),
-        ids: multi.size ? [...multi].filter((id) => id.startsWith('pad')) : null,
-      });
+      await colorJob('syncRGB', rgbContext(), (done) =>
+        done.failed
+          ? ''
+          : done.saved
+            ? 'Pad colors synced and saved to the controller'
+            : 'Pad colors synced. They may reset when the controller is unplugged.',
+      );
     });
 $('cancelRGB').onclick = () => safe(() => call('cancelRGB'));
-for (const id of ['identifyRGB', 'deviceIdentify']) $(id).onclick = () => safe(() => call('identifyRGB', rgbContext()));
+for (const id of ['identifyRGB', 'deviceIdentify'])
+  $(id).onclick = () => safe(() => colorJob('identifyRGB', rgbContext()));
 for (const id of ['confirmPreset', 'confirmPresetBar'])
   $(id).onclick = () =>
     safe(async () => {
@@ -1264,21 +2008,56 @@ for (const id of ['confirmPreset', 'confirmPresetBar'])
           : 'Preset confirmed. Confirm one more preset to turn on auto-detect.',
       );
     });
-$('deviceSave').onclick = () => safe(() => call('saveRGB'));
-$('adoptRGB').onclick = () => safe(() => mutate('adoptRGB', rgbContext()));
+$('deviceSave').onclick = () => safe(() => colorJob('saveRGB', {}, () => "Colors saved to the controller's memory"));
+for (const id of ['adoptRGB', 'adoptRGBBar'])
+  $(id).onclick = () =>
+    safe(async () => {
+      if (!(await allowSelection())) return;
+      await mutate('adoptRGB', rgbContext());
+      loadEditor();
+      toast(
+        "Studio now uses the controller's colors for Bank " + current().activeBank,
+        false,
+        undoAction('Use controller colors'),
+      );
+    });
+// A small menu button: opening focuses the first item, arrows move, Escape closes and returns focus.
+function wireMenu(button, list) {
+  const items = () => [...list.querySelectorAll('[role="menuitem"]:not(:disabled)')];
+  const close = (focus) => {
+    list.classList.add('hidden');
+    button.setAttribute('aria-expanded', 'false');
+    if (focus) button.focus();
+  };
+  button.onclick = () => {
+    const open = list.classList.contains('hidden');
+    list.classList.toggle('hidden', !open);
+    button.setAttribute('aria-expanded', String(open));
+    if (open) items()[0]?.focus();
+  };
+  list.addEventListener('keydown', (e) => {
+    const all = items(),
+      at = all.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      all[(at + (e.key === 'ArrowDown' ? 1 : -1) + all.length) % all.length]?.focus();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      close(true);
+    } else if (e.key === 'Tab') close(false);
+  });
+  list.addEventListener('click', (e) => e.target.closest('[role="menuitem"]') && close(false));
+  document.addEventListener('click', (e) => !list.contains(e.target) && !button.contains(e.target) && close(false));
+}
+wireMenu($('rgbMore'), $('rgbMenu'));
 $('pauseBtn').onclick = () =>
   safe(async () => {
     await call('pause');
     await refresh();
   });
 $('stopAudioBtn').onclick = () => safe(() => call('stopAudio'));
-$('undoBtn').onclick = () =>
-  safe(async () => {
-    dirty = false;
-    const undone = await mutate('undo');
-    loadEditor();
-    toast(undone ? 'Undone: ' + undone : 'Nothing to undo');
-  });
+$('undoBtn').onclick = () => safe(undoLast);
 $('performanceBtn').onclick = () =>
   safe(async () => {
     if (!(await allowSelection())) return;
@@ -1338,7 +2117,7 @@ $('deletePage').onclick = () =>
     if (!confirmed) return;
     await mutate('deletePage');
     loadEditor();
-    toast(name + ' deleted');
+    toast(name + ' deleted', false, undoAction('Delete ' + name));
   });
 $('newProfile').onclick = () =>
   safe(async () => {
@@ -1356,7 +2135,10 @@ $('deleteProfile').onclick = () =>
         { label: 'Delete profile', value: true },
       ],
     );
-    if (result) await mutate('deleteProfile');
+    if (!result) return;
+    const name = current().name;
+    await mutate('deleteProfile');
+    toast(name + ' deleted', false, undoAction('Delete ' + name));
   });
 $('saveProfile').onclick = () =>
   safe(async () => {
@@ -1390,18 +2172,34 @@ for (const id of ['trimStart', 'trimEnd'])
 $('importClips').onclick = () =>
   safe(async () => {
     let clips = await call('chooseAudio');
-    if (clips?.length) {
-      await loadLibrary();
-      toast(clips.length + ' clip(s) imported');
-    }
+    if (!clips?.length) return;
+    await loadLibrary();
+    const fresh = clips.filter((c) => !c.existing).length,
+      again = clips.length - fresh;
+    toast(
+      again === clips.length
+        ? again === 1
+          ? 'Already in your library: ' + clips[0].name
+          : again + ' clips are already in your library'
+        : fresh +
+            (fresh === 1 ? ' clip imported' : ' clips imported') +
+            (again ? ', ' + again + ' already in your library' : ''),
+    );
   });
 $('librarySearch').oninput = renderLibrary;
 $('masterVolume').oninput = () => ($('masterValue').textContent = $('masterVolume').value + '%');
 $('masterVolume').onchange = () => safe(() => mutate('masterVolume', { volume: Number($('masterVolume').value) }));
 $('liveColor').onchange = () => safe(() => mutate('settings', { liveColor: $('liveColor').value }));
-for (const id of ['autoConnect', 'autoProfiles', 'reducedMotion', 'liveFeedback'])
+for (const id of ['autoConnect', 'autoProfiles', 'reducedMotion', 'liveFeedback', 'extraBanks', 'saveOnSync'])
   $(id).onchange = () => safe(() => mutate('settings', { [id]: $(id).checked }));
 $('quitApp').onclick = () => safe(() => call('quit'));
+$('hideOnboarding').onclick = () =>
+  safe(async () => {
+    const finished = $('hideOnboarding').textContent === 'Done';
+    await mutate('onboarding', { dismissed: true });
+    if (!finished) toast('Get started is hidden. Turn it back on in Settings.');
+  });
+$('showOnboarding').onchange = () => safe(() => mutate('onboarding', { dismissed: !$('showOnboarding').checked }));
 $('startWithWindows').onchange = () =>
   safe(async () => {
     try {

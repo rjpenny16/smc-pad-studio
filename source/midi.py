@@ -174,7 +174,7 @@ class Transport:
 
     def send(self, data):
         if self.output is None:
-            raise RuntimeError('RGB output is not connected')
+            raise RuntimeError('The controller is not connected')
         buf = C.create_string_buffer(bytes(data))
         hdr = MIDIHDR(lpData=C.cast(buf, C.c_void_p), dwBufferLength=len(data))
         check(mm.midiOutPrepareHeader(self.output, C.byref(hdr), C.sizeof(hdr)))
@@ -304,7 +304,7 @@ class RGB:
     def request(self, cmd, data=b'', timeout=5, predicate=None):
         with self.lock:
             if self.port is None:
-                raise RuntimeError('Find the configuration port first')
+                raise RuntimeError('Connect the controller first')
             while True:
                 try:
                     self.transport.responses.get_nowait()
@@ -330,7 +330,9 @@ class RGB:
                 self.last_activity = time.monotonic()
                 return reply, payload
             self.ready = False
-            raise TimeoutError('No matching SMC-PAD configuration reply. Close MidiSuite and reconnect USB.')
+            raise TimeoutError(
+                'The controller did not answer. Close MidiSuite if it is open, then unplug and reconnect the controller.'
+            )
 
     def read_region(self, region, address, length, timeout=5):
         request = bytes([region]) + address.to_bytes(4, 'little') + length.to_bytes(3, 'little')
@@ -382,23 +384,26 @@ class RGB:
                     self.transport.close_output()
             raise RuntimeError('No configuration port replied. ' + ' | '.join(errors or ['No SMC-PAD port is present']))
 
-    def unlock(self):
+    def unlock(self, report=True):
+        """Open a configuration session and read the device memory. Background work
+        (live pad feedback) passes report=False so the interface does not show a read."""
         with self.lock:
             if self.port is None:
-                raise RuntimeError('Connect the RGB configuration port first')
+                raise RuntimeError('Connect the controller first')
             self.request(0x11)
             self.header = self.read_region(4, 0, 12)
             flash = bytearray(28312)
             for address in range(0, len(flash), 1009):
                 length = min(1009, len(flash) - address)
                 flash[address : address + length] = self.read_region(5, address, length)
-                self.event('rgb', {'state': 'reading', 'progress': round((address + length) * 100 / len(flash))})
+                if report:
+                    self.event('rgb', {'state': 'reading', 'progress': round((address + length) * 100 / len(flash))})
             self.flash = flash
             self.ready = True
 
     def address(self, pad, preset, bank):
         if not self.ready or self.flash is None:
-            raise RuntimeError('Read device colors first')
+            raise RuntimeError('Read the pad colors from the controller first')
         preset = int(preset)
         pad = int(pad)
         if not 0 <= preset <= 7 or not 1 <= pad <= 16 or bank not in BANK_GROUP:
@@ -426,24 +431,31 @@ class RGB:
             self.event('rgb', {'state': 'synced', 'colors': colors, 'preset': preset, 'bank': bank})
             return colors
 
-    def apply(self, colors, preset, bank, refresh=True, report=True):
+    def apply(self, colors, preset, bank, refresh=True, report=True, only_changed=False):
+        """Write pad colors and check each against the device. With only_changed, pads
+        that already show their color (in the memory just read by unlock) are reported
+        as stored without a write."""
         with self.lock:
             self.cancel.clear()
             # The pad ignores writes once its session lapses, even though memory
             # readback can still match. Replay the full unlock immediately before
             # writing, exactly as the verified read-then-write sequence does.
             if refresh or not self.ready:
-                self.unlock()
+                self.unlock(report)
             # Validate all intended addresses and colors before the first hardware write.
             writes = []
+            results = []
             for cid, color in colors.items():
                 if not cid.startswith('pad'):
                     raise ValueError('Only pad colors can be applied')
                 rgb = bytes.fromhex(color.removeprefix('#'))
                 if len(rgb) != 3:
                     raise ValueError('Invalid RGB color')
-                writes.append((cid, self.address(int(cid[3:]), preset, bank), rgb))
-            results = []
+                address = self.address(int(cid[3:]), preset, bank)
+                if only_changed and self.flash[address : address + 3] == rgb:
+                    results.append({'pad': cid, 'ok': True, 'color': '#' + rgb.hex()})
+                else:
+                    writes.append((cid, address, rgb))
             for cid, address, rgb in writes:
                 if self.cancel.is_set():
                     break
@@ -469,13 +481,15 @@ class RGB:
                         {
                             'state': 'writing',
                             'results': list(results),
-                            'progress': round(len(results) * 100 / len(writes)),
+                            'progress': round(len(results) * 100 / len(colors)),
                         },
                     )
             completed = {r['pad'] for r in results}
             for cid, _address, _rgb in writes:
                 if cid not in completed:
                     results.append({'pad': cid, 'ok': False, 'error': 'Cancelled or session interrupted'})
+            order = {cid: i for i, cid in enumerate(colors)}
+            results.sort(key=lambda r: order[r['pad']])
             if report:
                 self.event(
                     'rgb',
@@ -521,7 +535,9 @@ class RGB:
                 self.cancel.clear()
                 restored = self.apply(originals, preset, bank, refresh=False)
             if not all(r['ok'] for r in restored):
-                raise RuntimeError('Identify could not restore every pad. Read colors, then Apply to restore them.')
+                raise RuntimeError(
+                    'Identify could not restore every pad. Read colors, then Sync colors to restore them.'
+                )
             self.event(
                 'rgb',
                 {

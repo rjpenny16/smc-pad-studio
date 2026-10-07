@@ -17,13 +17,27 @@ import uuid
 import actions
 from audio import Audio
 import autostart
+import desktop
+from library import Library, display_name, path_key, same_file
 import media
 from midi import Transport, RGB, ports, bank_for_note, default_mapping, DEVICE_NAMES, NOTE_GROUP
-from store import Store, profile, page, validate_control, number, preset_locator, window_size, AUDIO_EXTS, BANKS
+from store import (
+    Store,
+    profile,
+    page,
+    validate_control,
+    number,
+    preset_locator,
+    window_size,
+    editor_sections,
+    control_clips,
+    AUDIO_EXTS,
+    BANKS,
+)
 
 VERSION = '0.8.0'
 # Boolean settings the interface may switch.
-SETTING_SWITCHES = ['autoProfiles', 'reducedMotion', 'liveFeedback', 'autoConnect']
+SETTING_SWITCHES = ['autoProfiles', 'reducedMotion', 'liveFeedback', 'autoConnect', 'extraBanks', 'saveOnSync']
 # Commands that edit profile content; anything else here is navigation or a preference.
 EDITS = {
     'copyControls': 'Copy configuration',
@@ -142,7 +156,12 @@ class Controller:
         self.learned = None
         self.previous = {}
         self.primary = ''
-        self.connection = {'state': 'disconnected', 'message': 'Connect your SMC-PAD to begin'}
+        # reason tells the interface why it is not connected: notConnected, unplugged or manual.
+        self.connection = {
+            'state': 'disconnected',
+            'reason': 'notConnected',
+            'message': 'Connect your SMC-PAD to begin',
+        }
         self.rgb_state = {'state': 'notRead', 'colors': {}, 'results': []}
         self.last_midi = None
         self.available = ports()
@@ -163,6 +182,9 @@ class Controller:
         self.performance_auto = False
         self.performance_candidates = set()
         self.rgb_epoch = 0
+        # Each queued color operation gets a job id; the outcome of the last one is in snapshots.
+        self.rgb_job = 0
+        self.rgb_done = None
         self.device_busy = False
         self.hardware_bank_marker = None
         self.live_lit = {}
@@ -171,6 +193,11 @@ class Controller:
         self.download_cancel = threading.Event()
         self.download_thread = None
         self.waveforms = {}
+        self.library = Library(self.store.root / 'Audio')
+        # Bumped when clips are added, removed, renamed or measured, so an open Soundboard reloads.
+        self.library_revision = 0
+        self.probed = set()
+        self.probe_thread = None
         self.audio = Audio(self.event)
         self.transport = transport or Transport(self.on_midi)
         self.rgb = RGB(self.transport, self.event)
@@ -213,6 +240,54 @@ class Controller:
 
     def _changed(self):
         self.revision += 1
+
+    def _onboarding(self, step):
+        """Tick a Getting started step the person has now done; it is saved once."""
+        with self.lock, self.store.lock:
+            progress = self.store.data['settings']['onboarding']
+            if not progress[step]:
+                progress[step] = True
+                self.store.persist()
+                self._changed()
+
+    def _missing_clips(self):
+        """Controls in the active bank whose clip file is gone (removed, or moved outside Studio)."""
+        return sorted(
+            cid
+            for cid, c in self.store.controls().items()
+            if any(h['value'] and not Path(h['value']).is_file() for h in control_clips(c))
+        )
+
+    def _release_clip(self, path):
+        """Stop a clip that is playing, so Windows lets go of its file."""
+        for player in self.audio.snapshot()['players']:
+            if same_file(player['path'], path):
+                self.audio.command('stop', {'control': player['control']}, wait=True)
+
+    def _probe(self, paths):
+        """Measure clip lengths in the background; the Soundboard reloads as they arrive."""
+        todo = [p for p in paths if str(p) not in self.probed]
+        if not todo or (self.probe_thread and self.probe_thread.is_alive()):
+            return
+
+        def measure():
+            reported = time.monotonic()
+            for path in todo:
+                self.probed.add(str(path))
+                try:
+                    seconds = media.probe_duration(path)
+                except Exception:
+                    logging.info('Could not read the length of %s', path, exc_info=True)
+                    continue
+                if seconds:
+                    self.audio.duration.setdefault(str(path), seconds)
+                    if time.monotonic() - reported > 1:
+                        reported = time.monotonic()
+                        self.library_revision += 1
+            self.library_revision += 1
+
+        self.probe_thread = threading.Thread(target=measure, name='Clip lengths', daemon=True)
+        self.probe_thread.start()
 
     def on_midi(self, port, data):
         if not data:
@@ -289,6 +364,8 @@ class Controller:
                 with self.lock:
                     self.hit_seq += 1
                     self.hits.append({'id': cid, 'bank': bank, 'page': current['activePage'], 'seq': self.hit_seq})
+                if not self.store.data['settings']['onboarding']['pressed']:
+                    self._onboarding('pressed')
             key = (current['id'], current['activePage'], bank, cid)
             value = data[2] if len(data) > 2 else data[1]
             if cid.startswith('knob'):
@@ -405,11 +482,12 @@ class Controller:
                 except Exception as exc:
                     self.event('rgb', {'state': 'error', 'message': str(exc)})
                 continue
-            if command in ['read', 'apply', 'identify', 'save'] and data.get('epoch') != self.rgb_epoch:
+            if command in ['read', 'apply', 'sync', 'identify', 'save'] and data.get('epoch') != self.rgb_epoch:
                 continue
             self.device_busy = True
+            outcome = {'job': data.get('job'), 'ok': True}
             try:
-                if command in ['read', 'apply', 'identify']:
+                if command in ['read', 'apply', 'sync', 'identify']:
                     # Resolve the live preset when the queued operation actually
                     # runs, rather than trusting a stale dropdown or snapshot.
                     self.rgb.header = self.rgb.read_region(4, 0, 12)
@@ -450,7 +528,7 @@ class Controller:
                         else next(iter(candidates), None)
                     )
                     if not inp:
-                        raise RuntimeError('No SMC-PAD performance input found. Connect USB and refresh ports.')
+                        raise RuntimeError('No SMC-PAD found. Check that its USB cable is plugged in.')
                     self.transport.open_input(inp)
                     self.primary = inp['name']
                     self.connection = {
@@ -480,20 +558,36 @@ class Controller:
                 elif command == 'apply':
                     self._live_restore()
                     self.rgb.apply(data['colors'], data['preset'], data['bank'])
+                elif command == 'sync':
+                    # Write only the pads that differ, then keep the colors after unplugging
+                    # (unless turned off), and only when every pad is confirmed and no one cancelled.
+                    self._live_restore()
+                    results = self.rgb.apply(data['colors'], data['preset'], data['bank'], only_changed=True)
+                    saved = data['save'] and all(r['ok'] for r in results) and data['epoch'] == self.rgb_epoch
+                    if saved:
+                        self.rgb.save()
+                    outcome['saved'] = saved
+                    outcome['failed'] = sum(not r['ok'] for r in results)
+                    if not outcome['failed']:
+                        self._onboarding('synced')
                 elif command == 'identify':
                     self._live_restore()
                     self.rgb.identify(data['preset'], data['bank'])
                 elif command == 'save':
                     self._live_restore()
                     self.rgb.save()
+                if 'job' in data:
+                    self.rgb_done = outcome
             except Exception as exc:
+                if 'job' in data:
+                    self.rgb_done = {'job': data['job'], 'ok': False, 'message': str(exc)}
                 if command == 'connect':
                     self.connection = {'state': 'error', 'message': str(exc)}
                     # Retry automatic connections less and less often (a busy port, MidiSuite open).
                     self._connect_failures += 1
                     self._retry_at = time.monotonic() + min(30, 2**self._connect_failures)
                 self.event(
-                    'rgb' if command in ['read', 'apply', 'identify', 'save'] else 'error',
+                    'rgb' if command in ['read', 'apply', 'sync', 'identify', 'save'] else 'error',
                     {'state': 'error', 'message': str(exc)},
                 )
             finally:
@@ -567,7 +661,7 @@ class Controller:
             for key in sorted(want - set(self.live_lit)):
                 preset, bank, cid = key
                 if not self.rgb.ready:
-                    self.rgb.unlock()
+                    self.rgb.unlock(report=False)
                 address = self.rgb.address(int(cid[3:]), preset, bank)
                 original = '#' + self.rgb.flash[address : address + 3].hex()
                 result = self.rgb.apply({cid: settings['liveColor']}, preset, bank, refresh=False, report=False)[0]
@@ -600,6 +694,7 @@ class Controller:
             self.rgb.ready = False
             self.connection = {
                 'state': 'disconnected',
+                'reason': 'unplugged',
                 'message': 'USB disconnected. Studio reconnects when the controller is plugged back in.',
             }
             self.primary = ''
@@ -687,6 +782,7 @@ class Controller:
                     **copy.deepcopy(self.rgb_state),
                     'activePreset': active,
                     'activeBank': self.rgb.active_bank(),
+                    'done': copy.deepcopy(self.rgb_done),
                     'presetDetection': {
                         'located': active is not None,
                         'presets': len({x['preset'] for x in self.store.data['settings'].get('presetSamples', [])}),
@@ -701,6 +797,8 @@ class Controller:
                     'audio': self.audio.snapshot(),
                     'paused': self.paused,
                     'canUndo': bool(self.store.undo),
+                    # What Undo would revert, so an Undo button on a message only undoes its own change.
+                    'undoLabel': self.store.undo[-1][0] if self.store.undo else None,
                     'learning': self.learning,
                     'learned': self.learned,
                     'hits': list(self.hits),
@@ -714,10 +812,25 @@ class Controller:
                 }
                 if data.get('revision') != self.revision:
                     result['store'] = self.store.snapshot()
+                    result['missingClips'] = self._missing_clips()
+                result['libraryRevision'] = self.library_revision
                 return result
         if command == 'refresh':
             self.available = ports()
             return self.available
+        if command == 'onboarding':
+            # Showing or hiding Getting started is not an edit: no Undo step.
+            with self.lock, self.store.lock:
+                self.store.data['settings']['onboarding']['dismissed'] = bool(data.get('dismissed'))
+                self.store.persist()
+                self._changed()
+            return True
+        if command == 'editorSections':
+            # Remembered layout like the window size: no Undo step, no refresh, and Learn keeps waiting.
+            with self.lock, self.store.lock:
+                self.store.data['settings']['editorSections'] = editor_sections(data)
+                self.store.persist()
+            return True
         if command == 'connect':
             self.device_queue.put_nowait(('connect', copy.deepcopy(data)))
             return True
@@ -735,18 +848,19 @@ class Controller:
                 self.rgb.ready = False
                 self.primary = ''
                 self._reconnect = None
-                self.connection = {'state': 'disconnected', 'message': 'Device disconnected'}
+                self.connection = {'state': 'disconnected', 'reason': 'manual', 'message': 'Device disconnected'}
             return True
         if command == 'saveRGB':
             if self.rgb.port is None:
-                raise RuntimeError('Connect the device configuration port first')
+                raise RuntimeError('Connect the controller first')
             if self.device_busy or not self.device_queue.empty():
-                raise RuntimeError('Wait for the current device operation, or cancel it first')
-            self.device_queue.put_nowait(('save', {'epoch': self.rgb_epoch}))
-            return True
+                raise RuntimeError('The controller is busy with another color operation. Wait for it, or cancel it.')
+            self.rgb_job += 1
+            self.device_queue.put_nowait(('save', {'epoch': self.rgb_epoch, 'job': self.rgb_job}))
+            return self.rgb_job
         if command == 'confirmPreset':
             if not self.rgb.header:
-                raise RuntimeError('Connect and read the device first')
+                raise RuntimeError('Connect the controller and read its colors first')
             preset = int(number(data.get('preset'), 0, 0, 7))
             with self.lock, self.store.lock:
                 settings = self.store.data['settings']
@@ -762,11 +876,11 @@ class Controller:
                 'detecting': self.detected_preset() is not None,
                 'presets': len({x['preset'] for x in settings['presetSamples']}),
             }
-        if command in ['readRGB', 'applyRGB', 'identifyRGB']:
+        if command in ['readRGB', 'applyRGB', 'syncRGB', 'identifyRGB']:
             if self.rgb.port is None:
-                raise RuntimeError('Connect the device configuration port first')
+                raise RuntimeError('Connect the controller first')
             if self.device_busy or not self.device_queue.empty():
-                raise RuntimeError('Wait for the current device operation, or cancel it first')
+                raise RuntimeError('The controller is busy with another color operation. Wait for it, or cancel it.')
             payload = {
                 'preset': int(number(data.get('preset'), 0, 0, 7)),
                 'bank': data.get('bank', 'A'),
@@ -774,7 +888,7 @@ class Controller:
             }
             if payload['bank'] not in BANKS:
                 raise ValueError('Invalid bank')
-            if command == 'applyRGB':
+            if command in ['applyRGB', 'syncRGB']:
                 payload['colors'] = {
                     cid: c['color']
                     for cid, c in self._target(data).items()
@@ -782,17 +896,24 @@ class Controller:
                 }
                 if not payload['colors']:
                     raise ValueError('Select at least one pad to apply hardware colors')
+            if command == 'syncRGB':
+                payload['save'] = self.store.data['settings']['saveOnSync']
+            self.rgb_job += 1
+            payload['job'] = self.rgb_job
             self.rgb_state.pop('identified', None)
             self.device_queue.put_nowait(
-                ({'readRGB': 'read', 'applyRGB': 'apply', 'identifyRGB': 'identify'}[command], payload)
+                (
+                    {'readRGB': 'read', 'applyRGB': 'apply', 'syncRGB': 'sync', 'identifyRGB': 'identify'}[command],
+                    payload,
+                )
             )
-            return True
+            return self.rgb_job
         if command == 'adoptRGB':
             with self.lock, self.store.lock:
                 if self.rgb_state.get('bank') != data.get('bank', self.store.current()['activeBank']):
-                    raise ValueError('Read colors from this bank first')
+                    raise ValueError("Read this bank's colors from the controller first")
                 target = self._target(data)
-                self.store.checkpoint('Use device colors')
+                self.store.checkpoint('Use controller colors')
                 for cid, color in self.rgb_state.get('colors', {}).items():
                     target[cid]['color'] = color
                 self.store.persist()
@@ -828,7 +949,7 @@ class Controller:
             return True
         if command == 'learn':
             if not self.primary:
-                raise ValueError('Connect MIDI before learning a control')
+                raise ValueError('Connect the controller before using Learn')
             if data['id'] not in self._target(data):
                 raise ValueError('Unknown control')
             self.learning = {
@@ -964,17 +1085,19 @@ class Controller:
             self._trigger(data['id'], cfg)
             return True
         if command == 'library':
-            folder = self.store.root / 'Audio'
-            folder.mkdir(exist_ok=True)
+            with self.lock, self.store.lock:
+                used = self.library.usage(self.store.data['profiles'])
+            files = sorted(self.library.files(), key=lambda p: p.stat().st_mtime, reverse=True)
+            self._probe([p for p in files if str(p) not in self.audio.duration])
             return [
                 {
                     'path': str(p),
-                    'name': p.name.split('-', 1)[-1] if len(p.name.split('-', 1)[0]) == 32 else p.name,
+                    'name': display_name(p),
                     'size': p.stat().st_size,
                     'duration': self.audio.duration.get(str(p)),
+                    'usedBy': used.get(path_key(p), []),
                 }
-                for p in folder.iterdir()
-                if p.is_file() and p.suffix.lower() in AUDIO_EXTS
+                for p in files
             ]
         if command in ['chooseAudio', 'importAudio']:
             paths = data.get('paths')
@@ -989,10 +1112,38 @@ class Controller:
                 source = Path(value).resolve(strict=True)
                 if source.suffix.lower() not in AUDIO_EXTS or source.stat().st_size > 200_000_000:
                     raise ValueError('Unsupported audio or file exceeds 200 MB')
+                # The same recording imported again reuses the library's copy.
+                existing = self.library.duplicate(source)
+                if existing:
+                    values.append({'path': str(existing), 'name': display_name(existing), 'existing': True})
+                    continue
                 target = folder / (uuid.uuid4().hex + '-' + source.name)
                 shutil.copy2(source, target)
                 values.append({'path': str(target), 'name': source.name})
+            self.library_revision += 1
             return values
+        if command == 'removeClip':
+            # To the Recycle Bin, never a permanent delete; pads that used it show a missing clip.
+            path = self.library.resolve(data.get('path'))
+            self._release_clip(path)
+            desktop.recycle(path)
+            self.audio.duration.pop(str(path), None)
+            self.event('audio', {'message': 'Moved to the Recycle Bin: ' + display_name(path)})
+            self.library_revision += 1
+            self._changed()
+            return True
+        if command == 'renameClip':
+            path = self.library.resolve(data.get('path'))
+            self._release_clip(path)
+            with self.lock, self.store.lock:
+                # Undo snapshots are rewritten too, so Undo cannot point at the old file name.
+                new = self.library.rename(path, data.get('name'), [self.store.data] + [x for _, x in self.store.undo])
+                self.store.persist()
+                self._changed()
+            if str(path) in self.audio.duration:
+                self.audio.duration[str(new)] = self.audio.duration.pop(str(path))
+            self.library_revision += 1
+            return {'path': str(new), 'name': display_name(new)}
         if command == 'previewAudio':
             cfg = data.get('control', {})
             path = data.get('path', cfg.get('value', ''))
@@ -1036,6 +1187,7 @@ class Controller:
                     data.get('name'),
                 )
                 self.event('audio', {'message': 'Cropped clip saved: ' + clip['name']})
+                self.library_revision += 1
                 return clip
             key = (str(path), path.stat().st_mtime_ns, int(number(data.get('width'), 1000, 50, 4000)))
             if key not in self.waveforms:
@@ -1101,6 +1253,7 @@ class Controller:
                     self._changed()
             with self.lock:
                 self.download.update(state='done', percent=100, clip=clip, title=clip['title'])
+                self.library_revision += 1
             self.event(
                 'audio',
                 {
