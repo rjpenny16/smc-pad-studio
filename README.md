@@ -5,8 +5,8 @@ Download `SMC-PAD-Studio-v0.8.0.exe` from this repository's **Releases** page an
 ## First session
 
 1. Close older Control Center instances and MidiSuite so they can release the MIDI device.
-2. Plug the SMC-PAD in by USB and choose **Connect device**. The Device page also offers manual performance/configuration port selection.
-3. Select a pad or encoder, choose an action, then **Learn physical control** and press or turn it. Save the control. **Test** executes its action immediately.
+2. Plug the SMC-PAD in by USB. Studio connects by itself at startup and whenever the controller is plugged in (Settings → **Connect automatically**). **Connect device** connects by hand, and the Device page also offers manual performance/configuration port selection.
+3. Select a pad or encoder and choose an action. Pads respond to their factory notes right away (Bank A 36–51, Bank B 52–67, channel 10), and the canvas highlights each control you press or turn. Use **Learn physical control** for encoders, buttons, or a controller whose notes were changed; learning an input another control used moves it rather than making both fire. Save the control. **Test** executes its action immediately.
 4. For audio, choose **Audio clip**, browse or drop a supported file, and set gain, trim, playback mode, loop and fades. The Soundboard view holds imported clips and the live mixer.
 5. For hardware lighting, see **Pad colors** below.
 
@@ -34,12 +34,14 @@ Hardware writes are serialized, re-establish the device session first, touch onl
 
 ## Everyday controls
 
-- Profiles have application pages and local mapping banks. A and B match the controller’s two physical pad banks (factory notes 36–51 and 52–67). The extra C–H mapping banks cover other MIDI note ranges; they are not extra positions of the physical PAD BANK button. Banks C–H are added to a profile the first time they are used. Different pages provide different action sets without rewriting hardware MIDI settings.
+- Profiles have application pages and local mapping banks. A and B match the controller’s two physical pad banks (factory notes 36–51 and 52–67). The extra C–H mapping banks cover other MIDI note ranges; they are not extra positions of the physical PAD BANK button. Banks C–H are added to a profile the first time they are used. Different pages provide different action sets without rewriting hardware MIDI settings. Assign **Next page** or **Previous page** to a pad or button, or **Switch pages** to an encoder, to change pages from the controller while Studio is in the tray. Pages are renamed and deleted in Profiles.
 - App rules accept executable names separated by commas, such as `chrome.exe, msedge.exe`. Enable automatic profiles in Settings and unpin the active profile to allow switching.
 - Macros support ordered actions, waits, duplication, reordering, a dry-run preview and cancellation. Dry-run executes nothing. Pause stops queued mappings/macros; Stop Audio is separate.
 - Encoder controls offer absolute/relative/auto interpretation, sensitivity, inversion, acceleration and a live input preview. Choose Absolute for the stock absolute SMC-PAD encoders if auto interpretation is unsuitable.
-- Ctrl-click several controls to copy an assignment while preserving each control's MIDI mapping. When several pads are selected, Apply writes their colors. Undo restores recent saved edits in this session.
-- Closing the window hides it to the tray and leaves MIDI/audio running. Open, Pause, Stop Audio and Quit are available there. Launching the EXE again restores the existing window. Quit in Settings exits completely.
+- Ctrl-click several controls to copy an assignment while preserving each control's MIDI mapping. When several pads are selected, Apply writes their colors. Undo restores recent saved edits in this session and names what it reverted; switching banks, pages or profiles and changing settings are not Undo steps.
+- Closing the window hides it to the tray and leaves MIDI/audio running. Open, Pause, Stop Audio and Quit are available there, and the tray tooltip shows whether Studio is connected or paused. Launching the EXE again restores the existing window. Quit in Settings exits completely.
+- Settings → **Start Studio when I sign in to Windows** opens Studio in the tray at sign-in, so pads work as soon as the controller is plugged in. The entry follows the EXE each time you start a newer release.
+- The window opens at a size that fits your screen and remembers its size and maximized state.
 - Reduced motion and keyboard navigation are available. Ctrl+S saves the selected control. Escape cancels MIDI learning and dismisses dialogs/diagnostics.
 
 Some hardware function buttons, including Shift, may not send MIDI. They remain selectable for local actions; only buttons that emit MIDI can be learned for physical triggers.
@@ -67,4 +69,4 @@ Requirements: Windows x64 with Microsoft Edge WebView2 Runtime and .NET Framewor
 
 `VERIFICATION-v0.6.0.json` records automated backend/native-interface checks and reversible tests on the attached SMC-PAD. Both A and B had all 16 colors read, changed/read back, batch written and restored; the complete configuration matched its original bytes afterward. Physical button presses, audible output quality and USB unplug/replug remain manual checks; those are not claimed as completed automated tests.
 
-The ZIP includes `source`, pinned dependencies, a Windows build script, regression tests and an explicit opt-in hardware verification script. No hardware writes run automatically during startup or regression tests. The protocol reference is [spectalive/smc-pad](https://github.com/spectalive/smc-pad); the implementation here was independently written from the observed wire format and validated on the attached device.
+The repository's `source` folder holds the code, pinned dependencies, a Windows build script, regression tests and an explicit opt-in hardware verification script. No hardware writes run automatically during startup or regression tests. The protocol reference is [spectalive/smc-pad](https://github.com/spectalive/smc-pad); the implementation here was independently written from the observed wire format and validated on the attached device.

@@ -8,6 +8,8 @@ Run safe regression tests with `python test_studio.py`. Code style is checked in
 
 Run `python main.py --ui-check --no-dialog` for a real native WebView2/bridge check; it automatically uses a separate verification directory unless `SMC_STUDIO_DATA` is explicitly supplied. The same flags work on the packaged EXE. The test checks profile/page/bank state, zero volume, captured audio import targets, macro preview, physical pad orientation, view navigation, responsive widths and live workers while the window is hidden. Reports appear in `ui-check.json` beside the test's startup log.
 
+`desktop.py` sizes the window for the screen and formats the tray tooltip; `autostart.py` manages the optional sign-in launch (`--background` starts hidden in the tray). Automatic connection is off during `--ui-check` so the check stays deterministic.
+
 `SMC_STUDIO_DATA` overrides the data folder for development/testing. Production profiles are never silently imported from browser storage; legacy JSON imports are explicit.
 
 Hardware verification is opt-in: `python verify_hardware.py --hardware report.json`. Close other MIDI apps first. This script briefly changes Pad 1 on hardware preset 1 in both banks, verifies readback, restores it, checks full-bank original-color writes, and compares the complete configuration before/after. It writes only validated RGB addresses and attempts recovery if a test fails. Do not run it while performing live with the controller.

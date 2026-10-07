@@ -81,4 +81,5 @@ jobs:
             source/dist/*.exe
             source/dist/SHA256.txt
             VERIFICATION-v0.6.0.json
+            VERIFICATION-RGB-2026-10-05.json
             THIRD-PARTY-NOTICES.txt
