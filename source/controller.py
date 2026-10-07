@@ -17,6 +17,8 @@ import uuid
 import actions
 from audio import Audio
 import autostart
+import desktop
+from library import Library, display_name, path_key, same_file
 import media
 from midi import Transport, RGB, ports, bank_for_note, default_mapping, DEVICE_NAMES, NOTE_GROUP
 from store import (
@@ -28,6 +30,7 @@ from store import (
     preset_locator,
     window_size,
     editor_sections,
+    control_clips,
     AUDIO_EXTS,
     BANKS,
 )
@@ -185,6 +188,11 @@ class Controller:
         self.download_cancel = threading.Event()
         self.download_thread = None
         self.waveforms = {}
+        self.library = Library(self.store.root / 'Audio')
+        # Bumped when clips are added, removed, renamed or measured, so an open Soundboard reloads.
+        self.library_revision = 0
+        self.probed = set()
+        self.probe_thread = None
         self.audio = Audio(self.event)
         self.transport = transport or Transport(self.on_midi)
         self.rgb = RGB(self.transport, self.event)
@@ -227,6 +235,45 @@ class Controller:
 
     def _changed(self):
         self.revision += 1
+
+    def _missing_clips(self):
+        """Controls in the active bank whose clip file is gone (removed, or moved outside Studio)."""
+        return sorted(
+            cid
+            for cid, c in self.store.controls().items()
+            if any(h['value'] and not Path(h['value']).is_file() for h in control_clips(c))
+        )
+
+    def _release_clip(self, path):
+        """Stop a clip that is playing, so Windows lets go of its file."""
+        for player in self.audio.snapshot()['players']:
+            if same_file(player['path'], path):
+                self.audio.command('stop', {'control': player['control']}, wait=True)
+
+    def _probe(self, paths):
+        """Measure clip lengths in the background; the Soundboard reloads as they arrive."""
+        todo = [p for p in paths if str(p) not in self.probed]
+        if not todo or (self.probe_thread and self.probe_thread.is_alive()):
+            return
+
+        def measure():
+            reported = time.monotonic()
+            for path in todo:
+                self.probed.add(str(path))
+                try:
+                    seconds = media.probe_duration(path)
+                except Exception:
+                    logging.info('Could not read the length of %s', path, exc_info=True)
+                    continue
+                if seconds:
+                    self.audio.duration.setdefault(str(path), seconds)
+                    if time.monotonic() - reported > 1:
+                        reported = time.monotonic()
+                        self.library_revision += 1
+            self.library_revision += 1
+
+        self.probe_thread = threading.Thread(target=measure, name='Clip lengths', daemon=True)
+        self.probe_thread.start()
 
     def on_midi(self, port, data):
         if not data:
@@ -744,6 +791,8 @@ class Controller:
                 }
                 if data.get('revision') != self.revision:
                     result['store'] = self.store.snapshot()
+                    result['missingClips'] = self._missing_clips()
+                result['libraryRevision'] = self.library_revision
                 return result
         if command == 'refresh':
             self.available = ports()
@@ -1008,17 +1057,19 @@ class Controller:
             self._trigger(data['id'], cfg)
             return True
         if command == 'library':
-            folder = self.store.root / 'Audio'
-            folder.mkdir(exist_ok=True)
+            with self.lock, self.store.lock:
+                used = self.library.usage(self.store.data['profiles'])
+            files = sorted(self.library.files(), key=lambda p: p.stat().st_mtime, reverse=True)
+            self._probe([p for p in files if str(p) not in self.audio.duration])
             return [
                 {
                     'path': str(p),
-                    'name': p.name.split('-', 1)[-1] if len(p.name.split('-', 1)[0]) == 32 else p.name,
+                    'name': display_name(p),
                     'size': p.stat().st_size,
                     'duration': self.audio.duration.get(str(p)),
+                    'usedBy': used.get(path_key(p), []),
                 }
-                for p in folder.iterdir()
-                if p.is_file() and p.suffix.lower() in AUDIO_EXTS
+                for p in files
             ]
         if command in ['chooseAudio', 'importAudio']:
             paths = data.get('paths')
@@ -1033,10 +1084,38 @@ class Controller:
                 source = Path(value).resolve(strict=True)
                 if source.suffix.lower() not in AUDIO_EXTS or source.stat().st_size > 200_000_000:
                     raise ValueError('Unsupported audio or file exceeds 200 MB')
+                # The same recording imported again reuses the library's copy.
+                existing = self.library.duplicate(source)
+                if existing:
+                    values.append({'path': str(existing), 'name': display_name(existing), 'existing': True})
+                    continue
                 target = folder / (uuid.uuid4().hex + '-' + source.name)
                 shutil.copy2(source, target)
                 values.append({'path': str(target), 'name': source.name})
+            self.library_revision += 1
             return values
+        if command == 'removeClip':
+            # To the Recycle Bin, never a permanent delete; pads that used it show a missing clip.
+            path = self.library.resolve(data.get('path'))
+            self._release_clip(path)
+            desktop.recycle(path)
+            self.audio.duration.pop(str(path), None)
+            self.event('audio', {'message': 'Moved to the Recycle Bin: ' + display_name(path)})
+            self.library_revision += 1
+            self._changed()
+            return True
+        if command == 'renameClip':
+            path = self.library.resolve(data.get('path'))
+            self._release_clip(path)
+            with self.lock, self.store.lock:
+                # Undo snapshots are rewritten too, so Undo cannot point at the old file name.
+                new = self.library.rename(path, data.get('name'), [self.store.data] + [x for _, x in self.store.undo])
+                self.store.persist()
+                self._changed()
+            if str(path) in self.audio.duration:
+                self.audio.duration[str(new)] = self.audio.duration.pop(str(path))
+            self.library_revision += 1
+            return {'path': str(new), 'name': display_name(new)}
         if command == 'previewAudio':
             cfg = data.get('control', {})
             path = data.get('path', cfg.get('value', ''))
@@ -1080,6 +1159,7 @@ class Controller:
                     data.get('name'),
                 )
                 self.event('audio', {'message': 'Cropped clip saved: ' + clip['name']})
+                self.library_revision += 1
                 return clip
             key = (str(path), path.stat().st_mtime_ns, int(number(data.get('width'), 1000, 50, 4000)))
             if key not in self.waveforms:
@@ -1145,6 +1225,7 @@ class Controller:
                     self._changed()
             with self.lock:
                 self.download.update(state='done', percent=100, clip=clip, title=clip['title'])
+                self.library_revision += 1
             self.event(
                 'audio',
                 {

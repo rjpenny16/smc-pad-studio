@@ -1117,6 +1117,57 @@ textarea {
 .empty .btn {
   margin-top: var(--sp-3);
 }
+/* Choose a clip from the library without leaving the editor. */
+.pick-list {
+  display: grid;
+  gap: 6px;
+  max-height: min(380px, 50vh);
+  overflow: auto;
+}
+.pick-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #10141a;
+}
+.pick-row:hover {
+  border-color: #3a4250;
+}
+.pick-choose {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  padding: 9px 11px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+.pick-choose .clip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.use-list {
+  margin: 0 0 var(--sp-2);
+  padding-left: 18px;
+  font-size: var(--fs-sm);
+  color: #c3cad6;
+  line-height: 1.7;
+}
+/* A pad whose clip was removed or moved outside Studio. */
+.pad.missing .pad-type {
+  color: var(--danger);
+}
+.drop.missing {
+  border-color: #f28a9680;
+}
+.drop.missing strong {
+  color: var(--danger);
+}
 .library-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 300px;

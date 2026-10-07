@@ -1,11 +1,13 @@
 """Regression checks; safe to run without executing shortcuts or hardware writes."""
 
+import json
 import math
 from pathlib import Path
 import queue
 import re
 import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import threading
@@ -15,7 +17,7 @@ from unittest.mock import patch
 import wave
 import zipfile
 
-from store import Store, validate_control, validate_profile, preset_locator, window_size, editor_sections
+from store import Store, validate_control, validate_profile, preset_locator, window_size, editor_sections, iter_clips
 from midi import RGB, encode, decode, bank_for_note, default_mapping
 from controller import Controller, matches, signature, delta, effective_mappings, VERSION
 from audio import Audio
@@ -1021,6 +1023,81 @@ class RegressionTests(unittest.TestCase):
             finally:
                 controller.close()
             self.assertTrue(Store(folder).data['settings']['saveOnSync'])
+
+    def test_library_dedupes_shows_usage_renames_and_recycles(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / 'Horn.wav'
+            with wave.open(str(source), 'wb') as audio:
+                audio.setnchannels(1)
+                audio.setsampwidth(2)
+                audio.setframerate(8000)
+                audio.writeframes(bytes(1600))
+            controller = Controller(Path(folder) / 'studio', FakeTransport())
+            controller._probe = lambda paths: None  # lengths are measured in another test
+            try:
+                first = controller.request('importAudio', {'paths': [str(source)]})['value'][0]
+                again = controller.request('importAudio', {'paths': [str(source)]})['value'][0]
+                self.assertEqual(again, {'path': first['path'], 'name': 'Horn.wav', 'existing': True})
+                self.assertEqual(len(controller.library.files()), 1)
+                pads = controller.store.controls()
+                pads['pad1'].update(action='playAudio', value=first['path'], audioName='Horn.wav')
+                pads['pad2'].update(action='macro', steps=[{'type': 'playAudio', 'value': first['path']}])
+                self.assertEqual([cid for _, _, cid, _ in iter_clips(controller.store.current())], ['pad1', 'pad2'])
+                controller.store.checkpoint('Edit')  # an Undo snapshot that still names the clip
+                listing = controller.request('library')['value']
+                self.assertEqual(
+                    [(u['id'], u['step']) for u in listing[0]['usedBy']], [('pad1', False), ('pad2', True)]
+                )
+                # Rename keeps the unique prefix and moves every reference, Undo snapshots included.
+                renamed = controller.request('renameClip', {'path': first['path'], 'name': 'Air: horn.wav'})['value']
+                self.assertEqual(renamed['name'], 'Air horn.wav')
+                self.assertEqual(Path(renamed['path']).name[:33], Path(first['path']).name[:33])
+                self.assertFalse(Path(first['path']).exists())
+                self.assertEqual((pads['pad1']['value'], pads['pad1']['audioName']), (renamed['path'], 'Air horn.wav'))
+                self.assertEqual(pads['pad2']['steps'][0]['value'], renamed['path'])
+                undone = controller.store.undo[-1][1]
+                self.assertIn(renamed['path'], json.dumps(undone))
+                self.assertNotIn(first['path'], json.dumps(undone))
+                # Only files inside the library can be renamed or removed.
+                self.assertFalse(controller.request('renameClip', {'path': str(source), 'name': 'x'})['ok'])
+                self.assertFalse(controller.request('removeClip', {'path': str(source)})['ok'])
+                self.assertTrue(source.exists())
+                recycled = []
+                with patch('desktop.recycle', side_effect=lambda path: (recycled.append(path), path.unlink())):
+                    self.assertTrue(controller.request('removeClip', {'path': renamed['path']})['ok'])
+                self.assertEqual(recycled, [Path(renamed['path'])])
+                self.assertEqual(controller.request('snapshot')['value']['missingClips'], ['pad1', 'pad2'])
+            finally:
+                controller.close()
+
+    def test_clip_lengths_are_read_in_the_background(self):
+        header = b'Input #0, wav, from x.wav:\n  Duration: 00:01:03.45, bitrate: 128 kb/s\n'
+        with patch('media.ffmpeg', return_value='ffmpeg'), patch('media.subprocess.run') as run:
+            run.return_value = subprocess.CompletedProcess([], 1, b'', header)
+            self.assertAlmostEqual(media.probe_duration('x.wav'), 63.45)
+            run.return_value = subprocess.CompletedProcess([], 1, b'', b'x.wav: Invalid data found')
+            self.assertIsNone(media.probe_duration('x.wav'))
+        with tempfile.TemporaryDirectory() as folder:
+            controller = Controller(folder, FakeTransport())
+            try:
+                controller.library.folder.mkdir(parents=True)
+                (controller.library.folder / ('0' * 32 + '-Clap.wav')).write_bytes(b'RIFF')
+                before = controller.request('snapshot')['value']['libraryRevision']
+                with patch('media.probe_duration', return_value=2.5):
+                    controller.request('library')  # starts measuring; the listing does not wait for it
+                    controller.probe_thread.join(5)
+                self.assertEqual(controller.request('library')['value'][0]['duration'], 2.5)
+                self.assertGreater(controller.request('snapshot')['value']['libraryRevision'], before)
+            finally:
+                controller.close()
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows Recycle Bin')
+    def test_recycle_moves_a_file_to_the_recycle_bin(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'studio-recycle-check.wav'
+            path.write_bytes(b'RIFF')
+            desktop.recycle(path)
+            self.assertFalse(path.exists())
 
     def test_editor_sections_are_remembered_without_an_undo_step(self):
         with tempfile.TemporaryDirectory() as folder:

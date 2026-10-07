@@ -172,6 +172,20 @@ def validate_control(cid, value):
     return result
 
 
+def control_clips(c):
+    """The clip holders of one control: itself when it plays a clip, then its playAudio macro steps."""
+    return ([c] if c['action'] == 'playAudio' else []) + [step for step in c['steps'] if step['type'] == 'playAudio']
+
+
+def iter_clips(profile):
+    """(page, bank, control id, holder) for every clip a profile plays; holder['value'] is its path."""
+    for pg in profile['pages']:
+        for bank, controls in pg['banks'].items():
+            for cid, c in controls.items():
+                for holder in control_clips(c):
+                    yield pg, bank, cid, holder
+
+
 def blank_bank():
     return {cid: blank_control(cid) for cid in IDS}
 
@@ -387,22 +401,16 @@ class Store:
                 if sum(i.file_size for i in z.infolist()) > 500_000_000:
                     raise ValueError('Profile expands beyond the size limit')
                 p = validate_profile(json.loads(z.read('profile.json')))
-                for pg in p['pages']:
-                    for values in pg['banks'].values():
-                        for c in values.values():
-                            clips = ([c] if c['action'] == 'playAudio' else []) + [
-                                step for step in c['steps'] if step['type'] == 'playAudio'
-                            ]
-                            for clip in clips:
-                                value = clip['value']
-                                if value.startswith('audio/'):
-                                    if value not in z.namelist() or Path(value).suffix.lower() not in AUDIO_EXTS:
-                                        raise ValueError('Missing or unsupported bundled audio')
-                                    folder = self.root / 'Audio'
-                                    folder.mkdir(exist_ok=True)
-                                    target = folder / (uuid.uuid4().hex + '-' + Path(value).name)
-                                    target.write_bytes(z.read(value))
-                                    clip['value'] = str(target)
+                for *_where, clip in iter_clips(p):
+                    value = clip['value']
+                    if value.startswith('audio/'):
+                        if value not in z.namelist() or Path(value).suffix.lower() not in AUDIO_EXTS:
+                            raise ValueError('Missing or unsupported bundled audio')
+                        folder = self.root / 'Audio'
+                        folder.mkdir(exist_ok=True)
+                        target = folder / (uuid.uuid4().hex + '-' + Path(value).name)
+                        target.write_bytes(z.read(value))
+                        clip['value'] = str(target)
         else:
             p = validate_profile(json.loads(path.read_text(encoding='utf8')))
         p['id'] = uuid.uuid4().hex
@@ -419,36 +427,20 @@ class Store:
             Path(path).write_text(json.dumps(p, indent=2), encoding='utf8')
             return
         # Detect unavailable media before opening (and replacing) a user's bundle.
-        for pg in p['pages']:
-            for controls in pg['banks'].values():
-                for c in controls.values():
-                    clips = ([c] if c['action'] == 'playAudio' else []) + [
-                        step for step in c['steps'] if step['type'] == 'playAudio'
-                    ]
-                    for clip in clips:
-                        if clip['value'] and not Path(clip['value']).is_file():
-                            raise ValueError('Missing audio: ' + Path(clip['value']).name)
+        for *_where, clip in iter_clips(p):
+            if clip['value'] and not Path(clip['value']).is_file():
+                raise ValueError('Missing audio: ' + Path(clip['value']).name)
         with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as z:
             included = {}
-            for pg in p['pages']:
-                for values in pg['banks'].values():
-                    for c in values.values():
-                        clips = ([c] if c['action'] == 'playAudio' else []) + [
-                            step for step in c['steps'] if step['type'] == 'playAudio'
-                        ]
-                        for clip in clips:
-                            if not clip['value']:
-                                continue
-                            source = Path(clip['value'])
-                            if not source.is_file():
-                                raise ValueError('Missing audio: ' + source.name)
-                            if str(source) not in included:
-                                name = (
-                                    'audio/'
-                                    + hashlib.sha256(str(source).encode()).hexdigest()[:16]
-                                    + source.suffix.lower()
-                                )
-                                z.write(source, name)
-                                included[str(source)] = name
-                            clip['value'] = included[str(source)]
+            for *_where, clip in iter_clips(p):
+                if not clip['value']:
+                    continue
+                source = Path(clip['value'])
+                if not source.is_file():
+                    raise ValueError('Missing audio: ' + source.name)
+                if str(source) not in included:
+                    name = 'audio/' + hashlib.sha256(str(source).encode()).hexdigest()[:16] + source.suffix.lower()
+                    z.write(source, name)
+                    included[str(source)] = name
+                clip['value'] = included[str(source)]
             z.writestr('profile.json', json.dumps(p, indent=2))

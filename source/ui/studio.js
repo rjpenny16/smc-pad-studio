@@ -179,6 +179,7 @@ let state = null,
   comboActive = -1,
   recording = null,
   sectionsApplied = false,
+  missingClips = [],
   performance = false,
   library = [],
   chosenClip = null,
@@ -239,6 +240,7 @@ async function refresh() {
     const learned = previous && snap.learned && snap.learned.seq !== previous.learned?.seq ? snap.learned : null;
     if (snap.store) {
       store = snap.store;
+      missingClips = snap.missingClips || [];
       renderStore();
       if (!dirty) loadEditor();
       else if (learned && sameControl(learned, target)) {
@@ -257,6 +259,8 @@ async function refresh() {
             (learned.moved?.length ? ' (moved from ' + learned.moved.join(', ') + ')' : ''),
         );
     }
+    // Clips were added, removed, renamed or measured: an open Soundboard reloads its list.
+    if (view === 'soundboard' && previous && snap.libraryRevision !== previous.libraryRevision) safe(loadLibrary);
     renderLive(previous);
     renderHits(previous);
     renderDownload();
@@ -338,7 +342,8 @@ function renderBoard() {
     if (isPad) {
       const n = Number(cid.slice(3)) - 1;
       button.style.order = (3 - Math.floor(n / 4)) * 4 + (n % 4);
-      button.innerHTML = `<span class="pad-number">${cid.slice(3).padStart(2, '0')}</span><span class="pad-name">${esc(cfg.label)}</span><span class="pad-type">${cfg.action === 'none' ? 'Unassigned' : esc(label(cfg.action))}</span>`;
+      button.classList.toggle('missing', missingClips.includes(cid));
+      button.innerHTML = `<span class="pad-number">${cid.slice(3).padStart(2, '0')}</span><span class="pad-name">${esc(cfg.label)}</span><span class="pad-type">${esc(padType(cid, cfg, false))}</span>`;
       $('pads').append(button);
     } else if (isKnob) {
       button.innerHTML = `<span class="dial"><span class="dial-core"></span></span><span>${esc(cfg.label)}</span>`;
@@ -454,7 +459,11 @@ function loadEditor() {
   $('actionSelect').value = draft.action;
   actionValues = { [draft.action]: draft.value };
   writeValueFields(draft.action, draft.value);
-  $('assignedAudioName').textContent = draft.audioName || 'Drop a clip or browse';
+  const missing = missingClips.includes(selected);
+  $('audioDrop').classList.toggle('missing', missing);
+  $('assignedAudioName').textContent = missing
+    ? 'Missing: ' + (draft.audioName || 'clip') + '. Choose another clip'
+    : draft.audioName || 'Drop a clip or browse';
   $('clipGainValue').textContent = draft.audioVolume + '%';
   $('colorFields').classList.toggle('hidden', !selected.startsWith('pad'));
   $('knobFields').classList.toggle('hidden', !selected.startsWith('knob'));
@@ -1004,20 +1013,19 @@ function renderAutostart() {
     ? 'Opens quietly in the tray, so your pads work as soon as the controller is plugged in.'
     : 'Available in the SMC-PAD Studio EXE. When running from source, start it yourself.';
 }
+// The small line on a pad: what it does, or that it is playing or has lost its clip.
+function padType(cid, cfg, playing) {
+  if (playing) return cfg.loop ? 'Looping' : 'Playing';
+  if (missingClips.includes(cid)) return 'Missing clip';
+  return cfg.action === 'none' ? 'Unassigned' : label(cfg.action);
+}
 function renderPlayingPads() {
   if (!state) return;
   let playing = new Set(state.audio.players.map((p) => p.control));
   for (const el of document.querySelectorAll('.pad')) {
     el.classList.toggle('playing', playing.has(el.dataset.id));
     let cfg = store ? controls()[el.dataset.id] : null;
-    if (cfg)
-      el.querySelector('.pad-type').textContent = playing.has(el.dataset.id)
-        ? cfg.loop
-          ? 'Looping'
-          : 'Playing'
-        : cfg.action === 'none'
-          ? 'Unassigned'
-          : label(cfg.action);
+    if (cfg) el.querySelector('.pad-type').textContent = padType(el.dataset.id, cfg, playing.has(el.dataset.id));
   }
 }
 function renderMixer() {
@@ -1087,7 +1095,25 @@ async function showView(next) {
 }
 async function loadLibrary() {
   library = await call('library');
+  if (chosenClip) chosenClip = library.find((c) => c.path === chosenClip.path) || null;
   renderLibrary();
+  if (!chosenClip) $('clipDetail').innerHTML = '<div class="empty">Select a clip to preview or assign it.</div>';
+}
+// A clip's length as m:ss.
+function clipLength(seconds) {
+  const s = Math.round(seconds);
+  return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}
+const fileSize = (bytes) =>
+  bytes < 1048576 ? Math.max(1, Math.round(bytes / 1024)) + ' KB' : (bytes / 1048576).toFixed(1) + ' MB';
+const clipFacts = (c) => [c.duration ? clipLength(c.duration) : null, fileSize(c.size)].filter(Boolean).join(' · ');
+// Where a clip is used, e.g. "Pad 3 (macro step) · Page 1, Bank A".
+const useText = (u) =>
+  `${u.control}${u.step ? ' (macro step)' : ''} · ${u.page}, Bank ${u.bank}` +
+  (store && u.profile !== current().name ? ' · ' + u.profile : '');
+function usedSummary(uses = []) {
+  if (!uses.length) return 'Not used yet';
+  return 'Used by ' + uses[0].control + (uses.length > 1 ? ' and ' + (uses.length - 1) + ' more' : '');
 }
 function renderLibrary() {
   let query = $('librarySearch').value.toLowerCase();
@@ -1097,7 +1123,7 @@ function renderLibrary() {
     ? list
         .map(
           (c) =>
-            `<article class="clip${chosenClip?.path === c.path ? ' selected' : ''}" data-clip="${esc(c.path)}"><div class="clip-icon">${icon('audio')}</div><div class="grow" style="flex:1;min-width:0"><div class="clip-name">${esc(c.name)}</div><div class="clip-details">${(c.size / 1048576).toFixed(1)} MB · ${c.duration ? c.duration.toFixed(1) + ' seconds' : 'Ready to preview'}</div></div><button class="btn ghost tiny" data-preview aria-label="Preview ${esc(c.name)}">${icon('play')}</button><button class="btn tiny" data-select>Details</button></article>`,
+            `<article class="clip${chosenClip?.path === c.path ? ' selected' : ''}" data-clip="${esc(c.path)}"><div class="clip-icon">${icon('audio')}</div><div class="grow" style="flex:1;min-width:0"><div class="clip-name">${esc(c.name)}</div><div class="clip-details">${esc(clipFacts(c))} · ${esc(usedSummary(c.usedBy))}</div></div><button class="btn ghost tiny" data-preview aria-label="Preview ${esc(c.name)}">${icon('play')}</button><button class="btn tiny" data-select>Details</button></article>`,
         )
         .join('')
     : `<div class="panel empty">${icon('audio')}<p>${query ? 'No clips match your search.' : 'No clips yet. Import audio files, or paste a YouTube link above.'}</p>${query ? '' : `<button class="btn" data-empty-import>${icon('plus')}Import clips</button>`}</div>`;
@@ -1118,7 +1144,7 @@ function renderClipDetail() {
   if (!chosenClip) return;
   let c = chosenClip;
   $('clipDetail').innerHTML =
-    `<div class="clip-icon" style="width:52px;height:52px;margin-bottom:16px">${icon('audio')}</div><h2 style="overflow-wrap:anywhere">${esc(c.name)}</h2><p class="muted">${(c.size / 1048576).toFixed(1)} MB · Windows default output</p><div class="row" style="margin-top:16px"><button class="btn primary" id="detailPreview">${icon('play')}Preview</button><button class="btn" id="detailInspect">Details</button></div><hr class="section-rule"><div class="field"><label id="detailCropLabel">Crop · drag the handles or the highlighted part</label><div id="detailCrop" role="group" aria-labelledby="detailCropLabel"></div></div><div class="row" style="flex-wrap:wrap"><button class="btn tiny" id="previewSelection">${icon('play')}Preview selection</button><button class="btn tiny" id="saveCrop">Save as new clip</button></div><p class="helper">Assign uses only the selected part. Save as new clip writes a separate cropped file to your library.</p><hr class="section-rule"><div class="field"><label for="assignPad">Assign to a pad in this bank</label><select id="assignPad">${Array.from({ length: 16 }, (_, i) => `<option value="pad${i + 1}"${selected === 'pad' + (i + 1) ? ' selected' : ''}>Pad ${i + 1} · ${esc(controls()['pad' + (i + 1)].label)}</option>`).join('')}</select></div><button class="btn" id="assignClip">Assign clip</button><p class="helper" id="clipMetadata"></p>`;
+    `<div class="clip-icon" style="width:52px;height:52px;margin-bottom:16px">${icon('audio')}</div><h2 style="overflow-wrap:anywhere">${esc(c.name)}</h2><p class="muted">${esc(clipFacts(c))}</p><div class="row wrap" style="margin-top:16px"><button class="btn primary" id="detailPreview">${icon('play')}Preview</button><button class="btn tiny" id="detailRename">Rename</button><button class="btn tiny danger" id="detailRemove">Remove</button></div><hr class="section-rule"><h3>Used by</h3>${c.usedBy?.length ? `<ul class="use-list">${c.usedBy.map((u) => `<li>${esc(useText(u))}</li>`).join('')}</ul>` : '<p class="helper">No pad plays this clip yet.</p>'}<hr class="section-rule"><div class="field"><label id="detailCropLabel">Crop · drag the handles or the highlighted part</label><div id="detailCrop" role="group" aria-labelledby="detailCropLabel"></div></div><div class="row" style="flex-wrap:wrap"><button class="btn tiny" id="previewSelection">${icon('play')}Preview selection</button><button class="btn tiny" id="saveCrop">Save as new clip</button></div><p class="helper">Assign uses only the selected part. Save as new clip writes a separate cropped file to your library.</p><hr class="section-rule"><div class="field"><label for="assignPad">Assign to a pad in this bank</label><select id="assignPad">${Array.from({ length: 16 }, (_, i) => `<option value="pad${i + 1}"${selected === 'pad' + (i + 1) ? ' selected' : ''}>Pad ${i + 1} · ${esc(controls()['pad' + (i + 1)].label)}</option>`).join('')}</select></div><button class="btn" id="assignClip">Assign clip</button>`;
   const crop = cropper($('detailCrop'), c.path, 0, 0);
   $('detailPreview').onclick = () => safe(() => call('previewAudio', { path: c.path }));
   $('previewSelection').onclick = () =>
@@ -1132,10 +1158,35 @@ function renderClipDetail() {
       renderClipDetail();
       toast('Saved ' + clip.name);
     });
-  $('detailInspect').onclick = () =>
+  $('detailRename').onclick = () =>
     safe(async () => {
-      let info = await call('inspectAudio', { path: c.path });
-      $('clipMetadata').textContent = info.duration.toFixed(2) + ' seconds';
+      const name = await nameDialog('Rename clip', c.name.replace(/\.[^.]+$/, ''));
+      if (!name) return;
+      const clip = await call('renameClip', { path: c.path, name });
+      chosenClip = { ...c, path: clip.path };
+      await loadLibrary();
+      await refresh();
+      renderClipDetail();
+      toast('Renamed to ' + clip.name);
+    });
+  $('detailRemove').onclick = () =>
+    safe(async () => {
+      const uses = c.usedBy || [];
+      const body =
+        `<p class="muted">${esc(c.name)} goes to the Windows Recycle Bin, so you can restore it from there.</p>` +
+        (uses.length
+          ? `<p class="helper">${uses.length === 1 ? 'This control uses it' : 'These controls use it'} and will show a missing clip:</p><ul class="use-list">${uses.map((u) => `<li>${esc(useText(u))}</li>`).join('')}</ul>`
+          : '');
+      const confirmed = await modal('Remove this clip?', body, [
+        { label: 'Keep clip', value: null },
+        { label: 'Move to Recycle Bin', value: true },
+      ]);
+      if (!confirmed) return;
+      await call('removeClip', { path: c.path });
+      chosenClip = null;
+      await loadLibrary();
+      await refresh();
+      toast(c.name + ' moved to the Recycle Bin');
     });
   $('assignClip').onclick = () =>
     safe(async () => {
@@ -1197,6 +1248,7 @@ function modal(title, body, choices = null) {
     $('modalAccept').onclick = () =>
       close(choices?.[1]?.value ?? ($('modalBody').querySelector('input')?.value || true));
     window.closeStudioModal = () => close(null);
+    window.resolveStudioModal = (value) => close(value);
   });
 }
 async function nameDialog(title, initial = '') {
@@ -1218,25 +1270,68 @@ function connect() {
 function rgbContext() {
   return { ...context(), preset: state?.rgb?.activePreset ?? Number($('rgbPreset').value) };
 }
-async function importForEditor(paths = null) {
-  const captured = clone(target);
-  const capturedControl = collect();
-  const values = await call(paths ? 'importAudio' : 'chooseAudio', paths ? { paths } : {});
-  if (!values?.length) return;
-  const value = values[0];
-  let cfg = capturedControl;
-  cfg.action = 'playAudio';
-  cfg.value = value.path;
-  cfg.audioName = value.name;
-  cfg.trimStart = 0;
-  cfg.trimEnd = 0;
+// Give the captured control a clip and save it with the edits it had; reload the editor if it still shows it.
+async function assignEditorClip(captured, cfg, clip) {
+  Object.assign(cfg, { action: 'playAudio', value: clip.path, audioName: clip.name, trimStart: 0, trimEnd: 0 });
   await call('saveControl', { ...captured, control: cfg });
   if (JSON.stringify(target) === JSON.stringify(captured)) {
     dirty = false;
     await refresh();
     loadEditor();
   } else await refresh();
-  toast('Clip assigned to ' + capturedControl.label);
+  toast(clip.name + ' assigned to ' + cfg.label + (clip.existing ? ' (already in your library)' : ''));
+}
+async function importForEditor(paths = null) {
+  const captured = clone(target);
+  const capturedControl = collect();
+  const values = await call(paths ? 'importAudio' : 'chooseAudio', paths ? { paths } : {});
+  if (!values?.length) return;
+  await assignEditorClip(captured, capturedControl, values[0]);
+}
+// Pick a clip from the library without leaving the editor.
+async function chooseFromLibrary() {
+  const captured = clone(target);
+  const capturedControl = collect();
+  const clips = await call('library');
+  const rows = clips
+    .map(
+      (c) =>
+        `<div class="pick-row" data-name="${esc(c.name.toLowerCase())}"><button type="button" class="pick-choose" data-choose="${esc(c.path)}"><span class="clip-name">${esc(c.name)}</span><span class="clip-details">${esc(clipFacts(c))} · ${esc(usedSummary(c.usedBy))}</span></button><button type="button" class="btn ghost tiny" data-preview="${esc(c.path)}" aria-label="Preview ${esc(c.name)}">${icon('play')}</button></div>`,
+    )
+    .join('');
+  const answer = modal(
+    'Choose a clip',
+    clips.length
+      ? `<div class="field"><label for="pickSearch">Search your library</label><input id="pickSearch" type="search" placeholder="Clip name" autocomplete="off"></div><div class="pick-list">${rows}</div><p class="helper hidden" id="pickNone">No clips match your search.</p>`
+      : '<p class="muted">Your library is empty. Import a clip to get started.</p>',
+    [
+      { label: 'Cancel', value: null },
+      { label: 'Import new clips', value: 'import' },
+    ],
+  );
+  const body = $('modalBody');
+  body.querySelector('#pickSearch')?.addEventListener('input', (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    let shown = 0;
+    for (const row of body.querySelectorAll('.pick-row')) {
+      row.classList.toggle('hidden', !row.dataset.name.includes(q));
+      shown += !row.classList.contains('hidden');
+    }
+    $('pickNone').classList.toggle('hidden', shown > 0);
+  });
+  body.querySelector('#pickSearch')?.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    body.querySelector('.pick-row:not(.hidden) [data-choose]')?.click();
+  });
+  for (const button of body.querySelectorAll('[data-choose]'))
+    button.onclick = () => window.resolveStudioModal(button.dataset.choose);
+  for (const button of body.querySelectorAll('[data-preview]'))
+    button.onclick = () => safe(() => call('previewAudio', { path: button.dataset.preview }));
+  const choice = await answer;
+  if (choice === 'import') return importForEditor();
+  const clip = clips.find((c) => c.path === choice);
+  if (clip) await assignEditorClip(captured, capturedControl, clip);
 }
 async function dropFiles(event) {
   event.preventDefault();
@@ -1732,7 +1827,7 @@ for (const ev of ['dragenter', 'dragover'])
 $('audioDrop').addEventListener('dragleave', () => $('audioDrop').classList.remove('drag'));
 $('audioDrop').addEventListener('drop', (e) => safe(() => dropFiles(e)));
 $('previewClip').onclick = () => safe(() => call('previewAudio', { control: collect() }));
-$('selectFromLibrary').onclick = () => safe(() => showView('soundboard'));
+$('selectFromLibrary').onclick = () => safe(chooseFromLibrary);
 $('addStep').onclick = () => {
   if (draft.steps.length >= 32) return toast('Maximum 32 steps', true);
   draft.steps.push({ type: 'delay', milliseconds: 250, value: '' });
@@ -1951,10 +2046,19 @@ for (const id of ['trimStart', 'trimEnd'])
 $('importClips').onclick = () =>
   safe(async () => {
     let clips = await call('chooseAudio');
-    if (clips?.length) {
-      await loadLibrary();
-      toast(clips.length + ' clip(s) imported');
-    }
+    if (!clips?.length) return;
+    await loadLibrary();
+    const fresh = clips.filter((c) => !c.existing).length,
+      again = clips.length - fresh;
+    toast(
+      again === clips.length
+        ? again === 1
+          ? 'Already in your library: ' + clips[0].name
+          : again + ' clips are already in your library'
+        : fresh +
+            (fresh === 1 ? ' clip imported' : ' clips imported') +
+            (again ? ', ' + again + ' already in your library' : ''),
+    );
   });
 $('librarySearch').oninput = renderLibrary;
 $('masterVolume').oninput = () => ($('masterValue').textContent = $('masterVolume').value + '%');
