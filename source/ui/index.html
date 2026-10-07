@@ -53,6 +53,15 @@
           <path d="m15 15 6 6" />
         </symbol>
         <symbol id="i-pin" viewBox="0 0 24 24"><path d="m9 3 6 0 0 5 4 4v2H5v-2l4-4V3Zm3 11v7" /></symbol>
+        <symbol id="i-up" viewBox="0 0 24 24"><path d="m6 15 6-6 6 6" /></symbol>
+        <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6" /></symbol>
+        <symbol id="i-copy" viewBox="0 0 24 24">
+          <rect x="8" y="8" width="12" height="12" rx="2" />
+          <path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3" />
+        </symbol>
+        <symbol id="i-record" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="5" fill="currentColor" stroke="none" />
+        </symbol>
       </defs>
     </svg>
     <div class="app">
@@ -201,175 +210,252 @@
                 </div>
               </div>
               <aside class="panel inspector" id="inspector">
-                <div class="panel-head">
+                <div class="panel-head inspector-head">
                   <div class="inspector-title">
                     <div class="swatch" id="selectedSwatch"></div>
                     <div>
-                      <h3 id="selectedName" style="margin: 0">Pad 1</h3>
+                      <h3 id="selectedName">Pad 1</h3>
                       <small class="muted" id="selectedType">Pad · Bank A</small>
                     </div>
                   </div>
-                  <span id="dirtyBadge" class="tag hidden">Unsaved</span>
+                  <span id="dirtyBadge" class="tag warn hidden">Unsaved</span>
                 </div>
-                <form id="editorForm" class="panel-body">
-                  <div class="field"><label for="labelInput">Label</label><input id="labelInput" maxlength="60" /></div>
-                  <div id="colorFields">
-                    <div class="row2">
+                <form id="editorForm" novalidate>
+                  <details class="section" data-section="action" open>
+                    <summary>Action<span class="section-meta" id="actionMeta"></span></summary>
+                    <div class="section-body">
                       <div class="field">
-                        <label for="colorInput">Pad color</label><input id="colorInput" type="color" />
+                        <label for="labelInput">Name</label><input id="labelInput" maxlength="60" />
                       </div>
                       <div class="field">
-                        <label for="colorHex">Hex value</label><input id="colorHex" pattern="#[0-9a-fA-F]{6}" />
-                      </div>
-                    </div>
-                    <div class="palette" id="palette"></div>
-                    <p class="helper" id="colorState">Local color. Apply to sync with your controller.</p>
-                  </div>
-                  <hr class="section-rule" />
-                  <div class="field">
-                    <label for="actionSearch">Find an action</label
-                    ><input id="actionSearch" type="search" placeholder="Search shortcuts, audio, windows…" />
-                  </div>
-                  <div class="field">
-                    <label for="actionSelect">Action</label
-                    ><select id="actionSelect"></select>
-                  </div>
-                  <div class="field hidden" id="valueField">
-                    <label for="valueInput" id="valueLabel">Value</label>
-                    <div class="row">
-                      <textarea id="valueInput" class="grow" rows="2"></textarea
-                      ><button type="button" class="btn tiny hidden" id="browseBtn">Browse</button>
-                    </div>
-                  </div>
-                  <div id="audioFields" class="hidden">
-                    <button type="button" class="drop" id="audioDrop" style="width: 100%">
-                      <svg><use href="#i-upload" /></svg><strong id="assignedAudioName">Drop a clip or browse</strong
-                      ><span>WAV · MP3 · M4A · AAC · WMA · FLAC</span>
-                    </button>
-                    <div class="row" style="margin-top: 9px">
-                      <button type="button" class="btn tiny" id="previewClip">
-                        <svg><use href="#i-play" /></svg>Preview</button
-                      ><button type="button" class="btn ghost tiny" id="selectFromLibrary">Library</button>
-                    </div>
-                    <div class="field" style="margin-top: 12px">
-                      <label for="ytEditorUrl">Or paste a YouTube link</label>
-                      <div class="yt-row">
-                        <input
-                          id="ytEditorUrl"
-                          type="url"
-                          placeholder="https://youtu.be/…"
-                          autocomplete="off"
-                          spellcheck="false"
-                        /><button type="button" class="btn tiny" id="ytEditorGo">Get MP3</button>
-                      </div>
-                      <div class="yt-status hidden" data-yt-status>
-                        <div class="row">
-                          <span class="helper grow" data-yt-text style="margin: 0; overflow-wrap: anywhere"></span
-                          ><button type="button" class="btn ghost tiny" data-yt-cancel>Cancel</button>
+                        <label for="actionPicker" id="actionLabel">What it does</label>
+                        <div class="combo">
+                          <input
+                            id="actionPicker"
+                            role="combobox"
+                            aria-autocomplete="list"
+                            aria-expanded="false"
+                            aria-controls="actionList"
+                            autocomplete="off"
+                            spellcheck="false"
+                          /><svg class="combo-chevron"><use href="#i-down" /></svg>
+                          <div
+                            class="combo-list hidden"
+                            id="actionList"
+                            role="listbox"
+                            aria-labelledby="actionLabel"
+                          ></div>
                         </div>
-                        <div class="progress"><i data-yt-bar></i></div>
+                        <select id="actionSelect" class="hidden" tabindex="-1" aria-hidden="true"></select>
+                      </div>
+                      <div class="field hidden" id="valueField">
+                        <label for="valueInput" id="valueLabel">Value</label>
+                        <div class="row">
+                          <textarea id="valueInput" class="grow" rows="2"></textarea
+                          ><button type="button" class="btn tiny hidden" id="browseBtn">Browse</button>
+                        </div>
+                      </div>
+                      <div class="field hidden" id="shortcutField">
+                        <label for="shortcutInput">Keys to press</label>
+                        <div class="recorder">
+                          <input
+                            id="shortcutInput"
+                            placeholder="Ctrl + Shift + T"
+                            autocomplete="off"
+                            spellcheck="false"
+                          /><button type="button" class="btn tiny" data-record>
+                            <svg><use href="#i-record" /></svg><span>Record</span>
+                          </button>
+                        </div>
+                        <p class="helper" id="shortcutHelp"></p>
+                      </div>
+                      <div class="hidden" id="twoWayFields">
+                        <div class="field">
+                          <label for="ccwInput">Turn counter-clockwise</label>
+                          <div class="recorder">
+                            <input id="ccwInput" placeholder="Ctrl + Z" autocomplete="off" spellcheck="false" /><button
+                              type="button"
+                              class="btn tiny"
+                              data-record
+                            >
+                              <svg><use href="#i-record" /></svg><span>Record</span>
+                            </button>
+                          </div>
+                        </div>
+                        <div class="field">
+                          <label for="cwInput">Turn clockwise</label>
+                          <div class="recorder">
+                            <input id="cwInput" placeholder="Ctrl + Y" autocomplete="off" spellcheck="false" /><button
+                              type="button"
+                              class="btn tiny"
+                              data-record
+                            >
+                              <svg><use href="#i-record" /></svg><span>Record</span>
+                            </button>
+                          </div>
+                        </div>
+                        <p class="helper" id="twoWayHelp"></p>
+                      </div>
+                      <div id="audioFields" class="hidden">
+                        <button type="button" class="drop" id="audioDrop">
+                          <svg><use href="#i-upload" /></svg
+                          ><strong id="assignedAudioName">Drop a clip or browse</strong
+                          ><span>WAV · MP3 · M4A · AAC · WMA · FLAC</span>
+                        </button>
+                        <div class="row field-gap">
+                          <button type="button" class="btn tiny" id="previewClip">
+                            <svg><use href="#i-play" /></svg>Preview</button
+                          ><button type="button" class="btn ghost tiny" id="selectFromLibrary">Library</button>
+                        </div>
+                        <div class="field field-gap">
+                          <label for="ytEditorUrl">Or paste a YouTube link</label>
+                          <div class="yt-row">
+                            <input
+                              id="ytEditorUrl"
+                              type="url"
+                              placeholder="https://youtu.be/…"
+                              autocomplete="off"
+                              spellcheck="false"
+                            /><button type="button" class="btn tiny" id="ytEditorGo">Get MP3</button>
+                          </div>
+                          <div class="yt-status hidden" data-yt-status>
+                            <div class="row">
+                              <span class="helper grow" data-yt-text style="margin: 0; overflow-wrap: anywhere"></span
+                              ><button type="button" class="btn ghost tiny" data-yt-cancel>Cancel</button>
+                            </div>
+                            <div class="progress"><i data-yt-bar></i></div>
+                          </div>
+                        </div>
+                        <h4 class="subheading">Playback</h4>
+                        <div class="field">
+                          <label for="audioMode">On repeated press</label
+                          ><select id="audioMode">
+                            <option value="restart">Restart clip</option>
+                            <option value="overlap">Allow overlap</option>
+                            <option value="toggle">Toggle play / stop</option>
+                          </select>
+                        </div>
+                        <div class="field">
+                          <label for="audioVolume">Clip gain <span id="clipGainValue">100%</span></label
+                          ><input id="audioVolume" type="range" min="0" max="100" value="100" />
+                        </div>
+                        <div class="field">
+                          <label id="editorCropLabel">Crop · drag the handles or the highlighted part</label>
+                          <div id="editorCrop" role="group" aria-labelledby="editorCropLabel"></div>
+                        </div>
+                        <div class="row2">
+                          <div class="field">
+                            <label for="trimStart">Trim start (seconds)</label
+                            ><input id="trimStart" type="number" min="0" step=".01" value="0" />
+                          </div>
+                          <div class="field">
+                            <label for="trimEnd">Trim end (0 = full)</label
+                            ><input id="trimEnd" type="number" min="0" step=".01" value="0" />
+                          </div>
+                        </div>
+                        <div class="row2">
+                          <div class="field">
+                            <label for="fadeIn">Fade in (seconds)</label
+                            ><input id="fadeIn" type="number" min="0" max="30" step=".1" value="0" />
+                          </div>
+                          <div class="field">
+                            <label for="fadeOut">Fade out (seconds)</label
+                            ><input id="fadeOut" type="number" min="0" max="30" step=".1" value="0" />
+                          </div>
+                        </div>
+                        <label class="check"><input id="loopAudio" type="checkbox" />Loop until stopped</label>
+                      </div>
+                      <div id="macroFields" class="hidden">
+                        <div class="inline-heading">
+                          <h4 class="subheading">Steps</h4>
+                          <button type="button" class="btn tiny" id="addStep">
+                            <svg><use href="#i-plus" /></svg>Add step
+                          </button>
+                        </div>
+                        <div id="steps"></div>
+                        <div class="row">
+                          <button type="button" class="btn ghost tiny" id="macroPreview">Dry-run preview</button
+                          ><button type="button" class="btn ghost tiny" id="cancelMacros">Cancel running</button>
+                        </div>
                       </div>
                     </div>
-                    <div class="field" style="margin-top: 12px">
-                      <label for="audioMode">On repeated press</label
-                      ><select id="audioMode">
-                        <option value="restart">Restart clip</option>
-                        <option value="overlap">Allow overlap</option>
-                        <option value="toggle">Toggle play / stop</option>
-                      </select>
-                    </div>
-                    <div class="field">
-                      <label for="audioVolume">Clip gain <span id="clipGainValue">100%</span></label
-                      ><input id="audioVolume" type="range" min="0" max="100" value="100" />
-                    </div>
-                    <div class="field">
-                      <label id="editorCropLabel">Crop · drag the handles or the highlighted part</label>
-                      <div id="editorCrop" role="group" aria-labelledby="editorCropLabel"></div>
-                    </div>
-                    <div class="row2">
-                      <div class="field">
-                        <label for="trimStart">Trim start (seconds)</label
-                        ><input id="trimStart" type="number" min="0" step=".01" value="0" />
+                  </details>
+                  <details class="section" data-section="light" id="colorFields" open>
+                    <summary>Pad light<span class="section-meta" id="lightMeta"></span></summary>
+                    <div class="section-body">
+                      <div class="row2">
+                        <div class="field">
+                          <label for="colorInput">Pad color</label><input id="colorInput" type="color" />
+                        </div>
+                        <div class="field">
+                          <label for="colorHex">Hex value</label><input id="colorHex" pattern="#[0-9a-fA-F]{6}" />
+                        </div>
                       </div>
-                      <div class="field">
-                        <label for="trimEnd">Trim end (0 = full)</label
-                        ><input id="trimEnd" type="number" min="0" step=".01" value="0" />
+                      <div class="palette" id="palette"></div>
+                      <p class="helper" id="colorState">Local color. Apply to sync with your controller.</p>
+                    </div>
+                  </details>
+                  <details class="section" data-section="physical" open>
+                    <summary>Physical control<span class="section-meta" id="physicalMeta"></span></summary>
+                    <div class="section-body">
+                      <div class="map-info" id="mappingInfo">Not learned yet</div>
+                      <div class="row">
+                        <button type="button" class="btn grow" id="learnBtn">
+                          <svg><use href="#i-link" /></svg>Learn</button
+                        ><button type="button" class="btn ghost" id="clearLearn">Clear</button>
+                      </div>
+                      <p class="helper" id="learnHint">Press Learn, then press or turn a control on your SMC-PAD.</p>
+                      <div class="field field-gap">
+                        <label for="triggerSelect">Trigger</label
+                        ><select id="triggerSelect">
+                          <option value="press">Press / knob movement</option>
+                          <option value="pressOnly">Press only</option>
+                          <option value="releaseOnly">Release only</option>
+                          <option value="both">Press and release</option>
+                        </select>
+                      </div>
+                      <div id="knobFields" class="hidden">
+                        <h4 class="subheading">Knob response</h4>
+                        <div class="field">
+                          <label for="encoderMode">Encoder mode</label
+                          ><select id="encoderMode">
+                            <option value="auto">Auto detect</option>
+                            <option value="absolute">Absolute (0–127)</option>
+                            <option value="relative">Relative increments</option>
+                          </select>
+                        </div>
+                        <div class="field">
+                          <label for="sensitivity">Sensitivity</label
+                          ><input id="sensitivity" type="number" min=".1" max="8" step=".1" value="1" />
+                        </div>
+                        <label class="check"><input id="invertKnob" type="checkbox" />Reverse direction</label
+                        ><label class="check"
+                          ><input id="accelerateKnob" type="checkbox" />Accelerate larger movements</label
+                        >
+                        <div class="map-info" id="calibration">Move the learned knob to preview its input.</div>
                       </div>
                     </div>
-                    <div class="row2">
-                      <div class="field">
-                        <label for="fadeIn">Fade in (seconds)</label
-                        ><input id="fadeIn" type="number" min="0" max="30" step=".1" value="0" />
-                      </div>
-                      <div class="field">
-                        <label for="fadeOut">Fade out (seconds)</label
-                        ><input id="fadeOut" type="number" min="0" max="30" step=".1" value="0" />
-                      </div>
-                    </div>
-                    <label class="check"><input id="loopAudio" type="checkbox" />Loop until stopped</label>
-                  </div>
-                  <div id="macroFields" class="hidden">
-                    <div class="inline-heading">
-                      <h3>Action sequence</h3>
-                      <button type="button" class="btn tiny" id="addStep">Add step</button>
-                    </div>
-                    <div id="steps"></div>
-                    <button type="button" class="btn ghost tiny" id="macroPreview">Dry-run preview</button
-                    ><button type="button" class="btn ghost tiny" id="cancelMacros">Cancel running</button>
-                  </div>
-                  <div id="knobFields" class="hidden">
-                    <hr class="section-rule" />
-                    <div class="field">
-                      <label for="encoderMode">Encoder mode</label
-                      ><select id="encoderMode">
-                        <option value="auto">Auto detect</option>
-                        <option value="absolute">Absolute (0–127)</option>
-                        <option value="relative">Relative increments</option>
-                      </select>
-                    </div>
-                    <div class="field">
-                      <label for="sensitivity">Sensitivity</label
-                      ><input id="sensitivity" type="number" min=".1" max="8" step=".1" value="1" />
-                    </div>
-                    <label class="check"><input id="invertKnob" type="checkbox" />Reverse direction</label
-                    ><label class="check"
-                      ><input id="accelerateKnob" type="checkbox" />Accelerate larger movements</label
-                    >
-                    <div class="map-info" id="calibration">Move the learned knob to preview its input.</div>
-                  </div>
-                  <hr class="section-rule" />
-                  <div class="field">
-                    <label for="triggerSelect">Trigger</label
-                    ><select id="triggerSelect">
-                      <option value="press">Press / knob movement</option>
-                      <option value="pressOnly">Press only</option>
-                      <option value="releaseOnly">Release only</option>
-                      <option value="both">Press and release</option>
-                    </select>
-                  </div>
-                  <div class="inline-heading">
-                    <h3 style="margin: 0">MIDI assignment</h3>
-                    <button type="button" class="btn ghost tiny" id="clearLearn">Clear</button>
-                  </div>
-                  <div class="map-info" id="mappingInfo">Not learned yet</div>
-                  <button type="button" class="btn" id="learnBtn" style="width: 100%">
-                    <svg><use href="#i-link" /></svg>Learn physical control
-                  </button>
-                  <div class="row" style="margin-top: 15px">
-                    <button type="submit" class="btn primary grow" id="saveControl">
-                      <svg><use href="#i-check" /></svg>Save control</button
-                    ><button type="button" class="btn" id="testAction" title="Execute this action">
-                      <svg><use href="#i-play" /></svg>Test
+                  </details>
+                  <div class="inspector-footer">
+                    <button type="button" class="btn ghost tiny hidden" id="copySelected">
+                      Copy configuration to selected controls
                     </button>
+                    <div class="row">
+                      <button type="submit" class="btn primary grow" id="saveControl" title="Save (Ctrl+S)">
+                        <svg><use href="#i-check" /></svg>Save</button
+                      ><button type="button" class="btn" id="testAction" title="Run this action now">
+                        <svg><use href="#i-play" /></svg>Test</button
+                      ><button
+                        type="button"
+                        class="btn ghost"
+                        id="revertControl"
+                        title="Discard unsaved changes"
+                        disabled
+                      >
+                        Revert
+                      </button>
+                    </div>
                   </div>
-                  <button
-                    type="button"
-                    class="btn ghost tiny hidden"
-                    id="copySelected"
-                    style="width: 100%; margin-top: 8px"
-                  >
-                    Copy configuration to selected controls
-                  </button>
                 </form>
               </aside>
             </div>

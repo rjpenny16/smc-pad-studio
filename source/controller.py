@@ -19,7 +19,18 @@ from audio import Audio
 import autostart
 import media
 from midi import Transport, RGB, ports, bank_for_note, default_mapping, DEVICE_NAMES, NOTE_GROUP
-from store import Store, profile, page, validate_control, number, preset_locator, window_size, AUDIO_EXTS, BANKS
+from store import (
+    Store,
+    profile,
+    page,
+    validate_control,
+    number,
+    preset_locator,
+    window_size,
+    editor_sections,
+    AUDIO_EXTS,
+    BANKS,
+)
 
 VERSION = '0.8.0'
 # Boolean settings the interface may switch.
@@ -718,6 +729,12 @@ class Controller:
         if command == 'refresh':
             self.available = ports()
             return self.available
+        if command == 'editorSections':
+            # Remembered layout like the window size: no Undo step, no refresh, and Learn keeps waiting.
+            with self.lock, self.store.lock:
+                self.store.data['settings']['editorSections'] = editor_sections(data)
+                self.store.persist()
+            return True
         if command == 'connect':
             self.device_queue.put_nowait(('connect', copy.deepcopy(data)))
             return True

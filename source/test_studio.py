@@ -15,7 +15,7 @@ from unittest.mock import patch
 import wave
 import zipfile
 
-from store import Store, validate_control, validate_profile, preset_locator, window_size
+from store import Store, validate_control, validate_profile, preset_locator, window_size, editor_sections
 from midi import RGB, encode, decode, bank_for_note, default_mapping
 from controller import Controller, matches, signature, delta, effective_mappings, VERSION
 from audio import Audio
@@ -951,6 +951,40 @@ class RegressionTests(unittest.TestCase):
             (Path(folder) / 'studio.js').write_text('let x = "</script>";', encoding='utf8')
             with self.assertRaises(RuntimeError):
                 ui_bundle.load(folder)
+
+    def test_editor_sections_are_remembered_without_an_undo_step(self):
+        with tempfile.TemporaryDirectory() as folder:
+            controller = Controller(folder, FakeTransport())
+            try:
+                controller._check_usb = lambda: None  # park the background check; it would clear primary
+                controller.primary = 'SMC-PAD'
+                self.assertEqual(
+                    controller.store.data['settings']['editorSections'],
+                    {'action': True, 'light': True, 'physical': True},
+                )
+                self.assertTrue(controller.request('learn', {'id': 'pad1'})['ok'])
+                before = controller.revision, len(controller.store.undo)
+                self.assertTrue(controller.request('editorSections', {'physical': False, 'other': False})['ok'])
+                # Layout is not an edit: no Undo step, no refresh, and Learn keeps waiting.
+                self.assertEqual((controller.revision, len(controller.store.undo)), before)
+                self.assertEqual(controller.learning['id'], 'pad1')
+            finally:
+                controller.close()
+            self.assertEqual(
+                Store(folder).data['settings']['editorSections'],
+                {'action': True, 'light': True, 'physical': False},
+            )
+        self.assertEqual(editor_sections('closed'), {'action': True, 'light': True, 'physical': True})
+
+    def test_shortcut_names_in_the_editor_match_actions(self):
+        # The pad editor records and checks shortcuts with the key names actions.shortcut accepts.
+        source = (Path(__file__).parent / 'ui' / 'studio.js').read_text(encoding='utf8')
+        known = re.search(r'const SHORTCUT_KEYS = new Set\(\[(.*?)\]\);', source, re.S).group(1)
+        self.assertIn("Array.from({ length: 24 }, (_, i) => 'f' + (i + 1))", known)
+        names = set(re.findall(r"^\s*'([a-z]+)',$", known, re.M)) | {f'f{i}' for i in range(1, 25)}
+        self.assertEqual(names, set(actions.KEYS))
+        recorded = re.search(r'const KEY_NAMES = \{(.*?)\};', source, re.S).group(1)
+        self.assertLessEqual(set(re.findall(r": '([a-z]+)',", recorded)), set(actions.KEYS))
 
 
 if __name__ == '__main__':

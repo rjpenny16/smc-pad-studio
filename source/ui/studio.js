@@ -62,6 +62,97 @@ const COLORS = [
   '#818cf8',
 ];
 const SIDE_NAMES = ['BT', 'Pad bank', 'Knob bank', 'Left', 'Right', 'Play', 'Stop', 'Record', 'Shift', 'Repeat'];
+// Actions whose value is typed into #valueInput: field label and placeholder. playAudio keeps its clip path there too.
+const VALUE_ACTIONS = {
+  launch: ['App or file', 'Browse or paste a path'],
+  url: ['Website address', 'https://example.com'],
+  typeText: ['Text to type', 'The text Studio types for you'],
+};
+// Key names actions.shortcut understands besides single characters (test_studio compares the lists).
+const SHORTCUT_KEYS = new Set([
+  'ctrl',
+  'control',
+  'alt',
+  'shift',
+  'win',
+  'windows',
+  'enter',
+  'return',
+  'tab',
+  'space',
+  'esc',
+  'escape',
+  'backspace',
+  'delete',
+  'del',
+  'insert',
+  'home',
+  'end',
+  'pageup',
+  'pagedown',
+  'up',
+  'down',
+  'left',
+  'right',
+  'plus',
+  'minus',
+  ...Array.from({ length: 24 }, (_, i) => 'f' + (i + 1)),
+]);
+// How stored key names read: ctrl+shift+t is shown as Ctrl + Shift + T.
+const KEY_LABELS = {
+  ctrl: 'Ctrl',
+  control: 'Ctrl',
+  alt: 'Alt',
+  shift: 'Shift',
+  win: 'Win',
+  windows: 'Win',
+  enter: 'Enter',
+  return: 'Enter',
+  tab: 'Tab',
+  space: 'Space',
+  esc: 'Esc',
+  escape: 'Esc',
+  backspace: 'Backspace',
+  delete: 'Delete',
+  del: 'Delete',
+  insert: 'Insert',
+  home: 'Home',
+  end: 'End',
+  pageup: 'PageUp',
+  pagedown: 'PageDown',
+  up: 'Up',
+  down: 'Down',
+  left: 'Left',
+  right: 'Right',
+  plus: 'Plus',
+  minus: 'Minus',
+};
+// KeyboardEvent.key values recorded by name. '+' separates keys, so the plus key is "plus".
+const KEY_NAMES = {
+  Control: 'ctrl',
+  Alt: 'alt',
+  Shift: 'shift',
+  Meta: 'win',
+  Enter: 'enter',
+  Tab: 'tab',
+  ' ': 'space',
+  Escape: 'esc',
+  Backspace: 'backspace',
+  Delete: 'delete',
+  Insert: 'insert',
+  Home: 'home',
+  End: 'end',
+  PageUp: 'pageup',
+  PageDown: 'pagedown',
+  ArrowUp: 'up',
+  ArrowDown: 'down',
+  ArrowLeft: 'left',
+  ArrowRight: 'right',
+  '+': 'plus',
+  '-': 'minus',
+};
+const MODIFIER_KEYS = ['ctrl', 'alt', 'shift', 'win'];
+const SHORTCUT_HINT = 'Select Record and press the keys. Type Win-key shortcuts such as Win + D by hand.';
 // Title and one-line description shown in the top bar for each view.
 const VIEWS = {
   studio: ['Studio', 'Choose a pad, knob or button to change what it does.'],
@@ -82,6 +173,12 @@ let state = null,
   draft = null,
   target = null,
   dirty = false,
+  actionValues = {},
+  comboOpen = false,
+  comboItems = [],
+  comboActive = -1,
+  recording = null,
+  sectionsApplied = false,
   performance = false,
   library = [],
   chosenClip = null,
@@ -196,6 +293,10 @@ function renderStore() {
     $('bank' + b).classList.toggle('hidden', !bankVisible(p, b));
   }
   $('extraBanks').checked = !!store.settings.extraBanks;
+  if (!sectionsApplied) {
+    sectionsApplied = true;
+    applySections(store.settings.editorSections);
+  }
   $('rgbPreset').value = String(store.settings.hardwarePreset ?? 0);
   $('liveFeedback').checked = !!store.settings.liveFeedback;
   $('liveColor').value = store.settings.liveColor || '#ffffff';
@@ -292,18 +393,13 @@ async function selectControl(cid) {
   renderBoard();
   loadEditor();
 }
-function actionOptions(search = '') {
+// Knob actions are offered only to knobs.
+const actionChoices = () => ACTIONS.filter((a) => a[2] !== 'Knob controls' || selected.startsWith('knob'));
+// The hidden <select> is the source of truth for the action; the picker below only chooses it.
+function actionOptions() {
   const value = $('actionSelect').value || draft?.action || 'none';
   const groups = new Map();
-  for (const action of ACTIONS) {
-    if (
-      search &&
-      !action[1].toLowerCase().includes(search.toLowerCase()) &&
-      !action[2].toLowerCase().includes(search.toLowerCase()) &&
-      action[0] !== value
-    )
-      continue;
-    if (action[2] === 'Knob controls' && !selected.startsWith('knob')) continue;
+  for (const action of actionChoices()) {
     if (!groups.has(action[2])) groups.set(action[2], []);
     groups.get(action[2]).push(action);
   }
@@ -323,10 +419,12 @@ function actionOptions(search = '') {
 }
 function loadEditor() {
   if (!store) return;
+  stopRecording(false);
   target = context();
   draft = clone(controls()[selected]);
   dirty = false;
   $('dirtyBadge').classList.add('hidden');
+  $('revertControl').disabled = true;
   $('selectedName').textContent = draft.label;
   $('selectedType').textContent =
     (selected.startsWith('pad') ? 'Pad' : selected.startsWith('knob') ? 'Encoder' : 'Button') +
@@ -337,7 +435,6 @@ function loadEditor() {
     ['labelInput', 'label'],
     ['colorInput', 'color'],
     ['colorHex', 'color'],
-    ['valueInput', 'value'],
     ['audioMode', 'audioMode'],
     ['audioVolume', 'audioVolume'],
     ['trimStart', 'trimStart'],
@@ -352,9 +449,10 @@ function loadEditor() {
   $('loopAudio').checked = !!draft.loop;
   $('invertKnob').checked = !!draft.invert;
   $('accelerateKnob').checked = !!draft.acceleration;
-  $('actionSearch').value = '';
   actionOptions();
   $('actionSelect').value = draft.action;
+  actionValues = { [draft.action]: draft.value };
+  writeValueFields(draft.action, draft.value);
   $('assignedAudioName').textContent = draft.audioName || 'Drop a clip or browse';
   $('clipGainValue').textContent = draft.audioVolume + '%';
   $('colorFields').classList.toggle('hidden', !selected.startsWith('pad'));
@@ -368,13 +466,41 @@ function loadEditor() {
 function markDirty() {
   dirty = true;
   $('dirtyBadge').classList.remove('hidden');
+  $('revertControl').disabled = false;
+}
+// Put a stored value into its action's fields. Each action keeps its own value while editing.
+function writeValueFields(action, value) {
+  value = String(value ?? '');
+  $('valueInput').value = action in VALUE_ACTIONS || action === 'playAudio' ? value : '';
+  $('shortcutInput').value = action === 'shortcut' ? shortcutText(value) : '';
+  // Like controller._trigger: without a "|" both directions use the same shortcut.
+  const sides = action === 'twoWayShortcutKnob' ? value.split('|') : [''];
+  $('ccwInput').value = shortcutText(sides[0].trim());
+  $('cwInput').value = shortcutText((sides[1] ?? sides[0]).trim());
+}
+// The value an action saves, read back from its fields.
+function fieldValue(action) {
+  if (action === 'shortcut') return shortcutValue($('shortcutInput').value);
+  if (action === 'twoWayShortcutKnob') {
+    const sides = [$('ccwInput').value, $('cwInput').value].map(shortcutValue);
+    return sides.some(Boolean) ? sides.join(' | ') : '';
+  }
+  return action in VALUE_ACTIONS || action === 'playAudio' ? $('valueInput').value : '';
+}
+function chooseAction(action) {
+  const previous = $('actionSelect').value;
+  if (action === previous) return;
+  actionValues[previous] = fieldValue(previous);
+  $('actionSelect').value = action;
+  writeValueFields(action, actionValues[action] ?? '');
+  markDirty();
+  renderFields();
 }
 function collect() {
   let cfg = clone(draft);
   for (const [id, key] of [
     ['labelInput', 'label'],
     ['colorInput', 'color'],
-    ['valueInput', 'value'],
     ['audioMode', 'audioMode'],
     ['encoderMode', 'encoderMode'],
     ['triggerSelect', 'trigger'],
@@ -390,6 +516,7 @@ function collect() {
   ])
     cfg[key] = Number($(id).value);
   cfg.action = $('actionSelect').value;
+  cfg.value = fieldValue(cfg.action);
   cfg.loop = $('loopAudio').checked;
   cfg.invert = $('invertKnob').checked;
   cfg.acceleration = $('accelerateKnob').checked;
@@ -397,29 +524,111 @@ function collect() {
 }
 async function saveEditor() {
   let cfg = collect();
+  const recolored = target.id.startsWith('pad') && cfg.color !== storedControl(target)?.color;
   await call('saveControl', { ...target, control: cfg });
   dirty = false;
   draft = cfg;
   await refresh();
   loadEditor();
-  toast('Control saved. Hardware colors stay staged until Apply.');
+  toast(cfg.label + ' saved' + (recolored ? '. Apply colors to light it on the controller.' : ''));
 }
 function renderFields() {
-  let action = $('actionSelect').value;
-  const needs = ['launch', 'url', 'shortcut', 'typeText', 'twoWayShortcutKnob'].includes(action);
-  $('valueField').classList.toggle('hidden', !needs);
+  const action = $('actionSelect').value;
+  $('valueField').classList.toggle('hidden', !(action in VALUE_ACTIONS));
+  $('shortcutField').classList.toggle('hidden', action !== 'shortcut');
+  $('twoWayFields').classList.toggle('hidden', action !== 'twoWayShortcutKnob');
   $('audioFields').classList.toggle('hidden', action !== 'playAudio');
   $('macroFields').classList.toggle('hidden', action !== 'macro');
   $('browseBtn').classList.toggle('hidden', action !== 'launch');
-  $('valueLabel').textContent =
-    {
-      launch: 'App or file path',
-      url: 'Website URL',
-      shortcut: 'Shortcut, such as ctrl+shift+tab',
-      typeText: 'Text to type',
-      twoWayShortcutKnob: 'Counter-clockwise | Clockwise',
-    }[action] || 'Value';
+  $('valueLabel').textContent = VALUE_ACTIONS[action]?.[0] || 'Value';
+  $('valueInput').placeholder = VALUE_ACTIONS[action]?.[1] || '';
+  $('actionMeta').textContent = label(action);
+  if (!comboOpen) $('actionPicker').value = label(action);
+  renderShortcutHelp();
   renderEditorCrop();
+}
+// Shortcuts are stored as ctrl+shift+t (see actions.shortcut) and shown as Ctrl + Shift + T.
+const shortcutValue = (text) =>
+  String(text ?? '')
+    .split('+')
+    .map((part) => part.trim().toLowerCase())
+    .join('+');
+function shortcutText(value) {
+  if (!value) return '';
+  return value
+    .split('+')
+    .map((part) => {
+      part = part.trim().toLowerCase();
+      const upper = part.toUpperCase();
+      if (Object.hasOwn(KEY_LABELS, part)) return KEY_LABELS[part];
+      return /^f\d+$/.test(part) || [...upper].length === 1 ? upper : part;
+    })
+    .join(' + ');
+}
+// Why actions.shortcut would reject a stored shortcut, or ''.
+function shortcutProblem(value) {
+  if (!value) return '';
+  for (const part of value.split('+')) {
+    if (!part) return 'Finish the shortcut, or write Plus for the + key.';
+    if (!SHORTCUT_KEYS.has(part) && [...part].length !== 1) return `Studio doesn't know the key “${part}”.`;
+  }
+  return '';
+}
+function renderShortcutHelp() {
+  const sides = [$('ccwInput').value, $('cwInput').value].map(shortcutValue);
+  for (const [id, problem] of [
+    ['shortcutHelp', shortcutProblem(shortcutValue($('shortcutInput').value))],
+    [
+      'twoWayHelp',
+      shortcutProblem(sides[0]) ||
+        shortcutProblem(sides[1]) ||
+        (sides.filter(Boolean).length === 1 ? 'Set a shortcut for both directions.' : ''),
+    ],
+  ]) {
+    $(id).textContent = problem || SHORTCUT_HINT;
+    $(id).classList.toggle('error', !!problem);
+  }
+}
+// Recording: the next key with its modifiers becomes the shortcut. Windows keeps Win-key shortcuts
+// for itself, so those are typed by hand.
+function keyName(e) {
+  if (KEY_NAMES[e.key]) return KEY_NAMES[e.key];
+  if (/^F([1-9]|1\d|2[0-4])$/.test(e.key)) return e.key.toLowerCase();
+  // Shift+1 is recorded as Shift + 1 rather than Shift + !, because Studio presses Shift itself.
+  if (e.shiftKey && /^Digit\d$/.test(e.code)) return e.code.slice(5);
+  // Letters typed on a layout without Latin letters, or with AltGr, are recorded by key position.
+  if (/^Key[A-Z]$/.test(e.code) && !/^[a-z]$/i.test(e.key)) return e.code.slice(3).toLowerCase();
+  return [...e.key].length === 1 ? e.key.toLowerCase() : null;
+}
+const heldKeys = (e) => MODIFIER_KEYS.filter((_, i) => [e.ctrlKey, e.altKey, e.shiftKey, e.metaKey][i]);
+const heldText = (held) => (held.length ? shortcutText(held.join('+')) + ' + …' : '');
+function startRecording(input, done) {
+  stopRecording(false);
+  const box = input.closest('.recorder');
+  recording = { input, box, done, previous: input.value, placeholder: input.placeholder };
+  box.classList.add('recording');
+  box.querySelector('[data-record] span').textContent = 'Cancel';
+  input.value = '';
+  input.placeholder = 'Press the keys…';
+  input.focus();
+}
+function stopRecording(keep) {
+  if (!recording) return;
+  const { input, box, done, previous, placeholder } = recording;
+  recording = null;
+  box.classList.remove('recording');
+  box.querySelector('[data-record] span').textContent = 'Record';
+  input.placeholder = placeholder;
+  if (keep) done(shortcutValue(input.value));
+  else input.value = previous;
+}
+function wireRecorder(input, done) {
+  const button = input.closest('.recorder').querySelector('[data-record]');
+  // Keep focus in the field, so clicking Cancel does not first end the recording through blur.
+  button.onmousedown = (e) => e.preventDefault();
+  button.onclick = () => (recording?.input === input ? stopRecording(false) : startRecording(input, done));
+  input.addEventListener('blur', () => recording?.input === input && stopRecording(false));
+  input.addEventListener('change', () => (input.value = shortcutText(shortcutValue(input.value))));
 }
 // The factory MIDI input of a pad (see midi.default_mapping), or null.
 function factoryMapping(bank, id) {
@@ -437,10 +646,12 @@ function renderMapping() {
   if (m) {
     $('mappingInfo').textContent =
       `${m.kind} · channel ${m.channel + 1} · number ${m.data1}\n${m.port || 'Primary performance input'}`;
+    $('physicalMeta').textContent = 'Learned';
     return;
   }
   if (!fallback) {
     $('mappingInfo').textContent = 'No physical control assigned';
+    $('physicalMeta').textContent = 'Not assigned';
     return;
   }
   // Mirrors controller.effective_mappings: a learned control elsewhere in the bank takes the factory input.
@@ -450,53 +661,117 @@ function renderMapping() {
   $('mappingInfo').textContent = owner
     ? `Not assigned: note ${fallback.data1} is learned by ${owner[1].label}`
     : `Factory default\nnote ${fallback.data1} · channel 10\nLearn to use a different control`;
+  $('physicalMeta').textContent = owner ? 'Not assigned' : 'Factory default';
 }
-function renderSteps() {
+const STEP_TYPES = [
+  ['delay', 'Wait'],
+  ...ACTIONS.filter((a) => !['none', 'macro'].includes(a[0]) && a[2] !== 'Knob controls').map((a) => a.slice(0, 2)),
+];
+// The field for a macro step's value; actions without a value have none.
+function stepField(step, n) {
+  const value = esc(step.value || '');
+  switch (step.type) {
+    case 'delay':
+      return `<label class="step-wait"><input type="number" min="0" max="30000" step="50" value="${esc(step.milliseconds ?? 250)}" data-ms aria-label="Step ${n}: milliseconds to wait"><span>ms</span></label>`;
+    case 'shortcut':
+      return `<div class="recorder"><input value="${esc(shortcutText(step.value || ''))}" placeholder="Ctrl + C" data-keys aria-label="Step ${n}: keys to press" autocomplete="off" spellcheck="false"><button type="button" class="btn tiny" data-record title="Record keys">${icon('record')}<span class="sr-only">Record</span></button></div>`;
+    case 'launch':
+      return `<div class="row"><input class="grow" value="${value}" placeholder="Browse or paste a path" data-text aria-label="Step ${n}: app or file"><button type="button" class="btn tiny" data-browse>Browse</button></div>`;
+    case 'url':
+      return `<input inputmode="url" value="${value}" placeholder="https://example.com" data-text aria-label="Step ${n}: website address">`;
+    case 'typeText':
+      return `<input value="${value}" placeholder="The text to type" data-text aria-label="Step ${n}: text to type">`;
+    case 'playAudio':
+      return `<div class="row"><span class="step-clip grow" title="${value}">${esc(step.value ? clipName(step.value.split(/[\\/]/).pop()) : 'No clip chosen')}</span><button type="button" class="btn tiny" data-clip>Choose clip</button></div>`;
+    default:
+      return '';
+  }
+}
+// Each step remembers its value per type while editing, so trying another type loses nothing.
+const stepValues = new WeakMap();
+// focus: [step index, selectors to try in order] for the element to focus after rebuilding.
+function renderSteps(focus = null) {
   if (!draft) return;
-  $('steps').replaceChildren();
+  const list = $('steps');
+  list.replaceChildren();
   if (!draft.steps.length)
-    $('steps').innerHTML = '<p class="helper">No steps yet. Add a step to build a sequence of actions.</p>';
+    list.innerHTML = '<p class="helper">No steps yet. Add a step to build a sequence of actions.</p>';
+  const count = draft.steps.length;
   for (const [index, step] of draft.steps.entries()) {
-    let el = document.createElement('div');
+    const n = index + 1;
+    const el = document.createElement('div');
     el.className = 'step';
-    let options = [
-      ['delay', 'Wait / delay'],
-      ...ACTIONS.filter((a) => a[0] !== 'none' && a[0] !== 'macro' && a[2] !== 'Knob controls').map((a) =>
-        a.slice(0, 2),
-      ),
-    ];
-    el.innerHTML = `<select aria-label="Macro step ${index + 1}">${options.map(([id, name]) => `<option value="${id}">${esc(name)}</option>`).join('')}</select><button type="button" class="btn ghost tiny" aria-label="Remove step ${index + 1}">${icon('close')}</button><input placeholder="${step.type === 'delay' ? 'Delay in milliseconds' : 'Value / shortcut / file'}" aria-label="Step value" value="${esc(step.type === 'delay' ? step.milliseconds : step.value || '')}" style="grid-column:1/-1"><div class="row" style="grid-column:1/-1"><button type="button" class="btn ghost tiny" data-up>Move up</button><button type="button" class="btn ghost tiny" data-duplicate>Duplicate</button></div>`;
-    el.querySelector('select').value = step.type;
-    el.querySelector('select').onchange = (e) => {
-      step.type = e.target.value;
-      step.milliseconds = step.milliseconds ?? 250;
+    el.innerHTML =
+      `<div class="step-main"><select aria-label="Step ${n} action">${STEP_TYPES.map(([id, name]) => `<option value="${id}">${esc(name)}</option>`).join('')}</select>${stepField(step, n)}</div>` +
+      `<div class="step-tools"><button type="button" class="icon-btn" data-move="-1" title="Move up" aria-label="Move step ${n} up"${index ? '' : ' disabled'}>${icon('up')}</button>` +
+      `<button type="button" class="icon-btn" data-move="1" title="Move down" aria-label="Move step ${n} down"${n < count ? '' : ' disabled'}>${icon('down')}</button>` +
+      `<button type="button" class="icon-btn" data-duplicate title="Duplicate" aria-label="Duplicate step ${n}">${icon('copy')}</button>` +
+      `<button type="button" class="icon-btn" data-remove title="Remove" aria-label="Remove step ${n}">${icon('close')}</button></div>`;
+    const select = el.querySelector('select');
+    select.value = step.type;
+    select.onchange = () => {
+      const memory = stepValues.get(step) || {};
+      memory[step.type] = step.value;
+      stepValues.set(step, memory);
+      step.type = select.value;
+      step.value = memory[step.type] ?? '';
+      if (step.type === 'delay') step.milliseconds = step.milliseconds ?? 250;
       markDirty();
-      renderSteps();
+      renderSteps([index, 'select']);
     };
-    el.querySelector('input').oninput = (e) => {
-      if (step.type === 'delay') step.milliseconds = Number(e.target.value);
-      else step.value = e.target.value;
-      markDirty();
-    };
-    el.querySelector('button').onclick = () => {
-      draft.steps.splice(index, 1);
-      markDirty();
-      renderSteps();
-    };
-    el.querySelector('[data-up]').onclick = () => {
-      if (index) {
-        [draft.steps[index - 1], draft.steps[index]] = [draft.steps[index], draft.steps[index - 1]];
+    el.querySelector('[data-ms]')?.addEventListener('input', (e) => (step.milliseconds = Number(e.target.value)));
+    el.querySelector('[data-text]')?.addEventListener('input', (e) => (step.value = e.target.value));
+    const keys = el.querySelector('[data-keys]');
+    if (keys) {
+      keys.addEventListener('input', () => (step.value = shortcutValue(keys.value)));
+      wireRecorder(keys, (value) => {
+        step.value = value;
         markDirty();
-        renderSteps();
-      }
-    };
+      });
+    }
+    el.querySelector('[data-browse]')?.addEventListener('click', () =>
+      safe(async () => {
+        const path = await call('browse');
+        if (!path) return;
+        step.value = path;
+        markDirty();
+        renderSteps([index, '[data-text]']);
+      }),
+    );
+    el.querySelector('[data-clip]')?.addEventListener('click', () =>
+      safe(async () => {
+        const clips = await call('chooseAudio');
+        if (!clips?.length) return;
+        step.value = clips[0].path;
+        markDirty();
+        renderSteps([index, '[data-clip]']);
+      }),
+    );
+    for (const button of el.querySelectorAll('[data-move]'))
+      button.onclick = () => {
+        const to = index + Number(button.dataset.move);
+        [draft.steps[index], draft.steps[to]] = [draft.steps[to], draft.steps[index]];
+        markDirty();
+        // Keep focus on the moved step, so the keyboard can move it again.
+        renderSteps([to, `[data-move="${button.dataset.move}"]:not(:disabled)`, '[data-move]:not(:disabled)']);
+      };
     el.querySelector('[data-duplicate]').onclick = () => {
       if (draft.steps.length >= 32) return toast('Maximum 32 steps', true);
       draft.steps.splice(index + 1, 0, clone(step));
       markDirty();
-      renderSteps();
+      renderSteps([index + 1, 'select']);
     };
-    $('steps').append(el);
+    el.querySelector('[data-remove]').onclick = () => {
+      draft.steps.splice(index, 1);
+      markDirty();
+      renderSteps([Math.min(index, draft.steps.length - 1), '[data-remove]']);
+    };
+    list.append(el);
+  }
+  if (focus) {
+    const [at, ...selectors] = focus;
+    const row = list.children[at];
+    (selectors.map((selector) => row?.querySelector(selector)).find(Boolean) || $('addStep')).focus();
   }
 }
 function renderColorState() {
@@ -516,6 +791,12 @@ function renderColorState() {
       : actual
         ? 'Unsynced: physical pad is ' + actual + '. Apply to update it.'
         : 'Local color. Read the device before applying changes.';
+  const status = actual === draft.color ? 'On the controller' : actual ? 'Not synced' : '';
+  renderOnChange(
+    $('lightMeta'),
+    [draft.color, status],
+    ([color, text]) => `<i class="meta-swatch" style="--color:${esc(color)}"></i>${esc(text)}`,
+  );
 }
 function renderLive(previous) {
   if (!state) return;
@@ -608,8 +889,11 @@ function renderLive(previous) {
   if (draft) {
     let cal = state.calibration[selected];
     if (cal) $('calibration').textContent = `Raw ${cal.raw} · delta ${cal.delta}\n${cal.port} · ${cal.mode}`;
-    let waiting = state.learning && state.learning.id === selected;
-    $('learnBtn').innerHTML = icon('link') + (waiting ? 'Waiting… click to cancel' : 'Learn physical control');
+    let waiting = sameControl(state.learning, target);
+    renderOnChange($('learnBtn'), waiting, (on) => icon('link') + (on ? 'Cancel learning' : 'Learn'));
+    $('learnHint').textContent = waiting
+      ? 'Waiting for your SMC-PAD: press or turn the control. Esc cancels.'
+      : 'Press Learn, then press or turn a control on your SMC-PAD.';
     for (let el of document.querySelectorAll('[data-id]'))
       el.classList.toggle('learning', waiting && el.dataset.id === selected);
   }
@@ -1160,8 +1444,8 @@ function renderDownload() {
   if (d.assign && target && dirty && JSON.stringify(d.assign) === JSON.stringify(target)) {
     draft.value = d.clip.path;
     draft.audioName = d.clip.name;
+    chooseAction('playAudio');
     $('valueInput').value = d.clip.path;
-    $('actionSelect').value = 'playAudio';
     $('assignedAudioName').textContent = d.clip.name;
     $('trimStart').value = 0;
     $('trimEnd').value = 0;
@@ -1179,17 +1463,166 @@ $('editorForm').onsubmit = (e) => {
   safe(saveEditor);
 };
 $('editorForm').addEventListener('input', (e) => {
-  if (['actionSearch', 'ytEditorUrl'].includes(e.target.id)) return;
+  if (['actionPicker', 'ytEditorUrl'].includes(e.target.id)) return;
   markDirty();
 });
 $('editorForm').addEventListener('change', (e) => {
-  if (!['actionSearch', 'ytEditorUrl'].includes(e.target.id)) markDirty();
+  if (!['actionPicker', 'ytEditorUrl'].includes(e.target.id)) markDirty();
 });
-$('actionSearch').oninput = () => actionOptions($('actionSearch').value);
-$('actionSelect').onchange = () => {
-  markDirty();
-  renderFields();
+// Action picker: a combobox that filters as you type; arrows move, Enter chooses, Escape closes.
+function renderCombo(query = '') {
+  const q = query.trim().toLowerCase();
+  const chosen = $('actionSelect').value;
+  const groups = new Map();
+  for (const item of actionChoices())
+    if (!q || item[1].toLowerCase().includes(q) || item[2].toLowerCase().includes(q)) {
+      if (!groups.has(item[2])) groups.set(item[2], []);
+      groups.get(item[2]).push(item);
+    }
+  comboItems = [...groups.values()].flat();
+  let index = 0;
+  $('actionList').innerHTML = comboItems.length
+    ? [...groups]
+        .map(
+          ([group, items], g) =>
+            `<div role="group" aria-labelledby="actionGroup${g}"><div class="combo-group" id="actionGroup${g}" role="presentation">${esc(group)}</div>${items
+              .map(
+                ([id, text]) =>
+                  `<div class="combo-option" role="option" id="actionOption${index}" data-index="${index++}" aria-selected="${id === chosen}"><span>${esc(text)}</span>${id === chosen ? icon('check') : ''}</div>`,
+              )
+              .join('')}</div>`,
+        )
+        .join('')
+    : '<div class="combo-empty">No actions match. Try another word.</div>';
+  setComboActive(q ? (comboItems.length ? 0 : -1) : comboItems.findIndex((a) => a[0] === chosen));
+}
+function setComboActive(index) {
+  comboActive = index;
+  let active = null;
+  for (const option of $('actionList').querySelectorAll('[role="option"]')) {
+    option.classList.toggle('active', Number(option.dataset.index) === index);
+    if (Number(option.dataset.index) === index) active = option;
+  }
+  if (!active) return $('actionPicker').removeAttribute('aria-activedescendant');
+  $('actionPicker').setAttribute('aria-activedescendant', active.id);
+  // Scroll the list only (not the page); the first option of a group brings its heading along.
+  const list = $('actionList');
+  const heading = active.previousElementSibling?.classList.contains('combo-group')
+    ? active.previousElementSibling
+    : null;
+  const top = (heading || active).offsetTop,
+    bottom = active.offsetTop + active.offsetHeight;
+  if (top < list.scrollTop) list.scrollTop = top;
+  else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight;
+}
+function openCombo(query = '') {
+  comboOpen = true;
+  $('actionList').classList.remove('hidden');
+  $('actionPicker').setAttribute('aria-expanded', 'true');
+  renderCombo(query);
+}
+function closeCombo() {
+  if (!comboOpen) return;
+  comboOpen = false;
+  $('actionList').classList.add('hidden');
+  $('actionPicker').setAttribute('aria-expanded', 'false');
+  $('actionPicker').removeAttribute('aria-activedescendant');
+  $('actionPicker').value = label($('actionSelect').value);
+}
+function pickAction(index) {
+  const item = comboItems[index];
+  closeCombo();
+  if (item) chooseAction(item[0]);
+}
+$('actionPicker').onclick = () => {
+  if (comboOpen) return closeCombo();
+  openCombo();
+  $('actionPicker').select();
 };
+$('actionPicker').oninput = () => openCombo($('actionPicker').value);
+$('actionPicker').onblur = closeCombo;
+$('actionPicker').onkeydown = (e) => {
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (!comboOpen) return openCombo();
+    const count = comboItems.length,
+      step = e.key === 'ArrowDown' ? 1 : -1;
+    if (count) setComboActive(((comboActive < 0 ? (step > 0 ? -1 : count) : comboActive) + step + count) % count);
+  } else if (e.key === 'Enter') {
+    // Enter chooses an action here; it does not submit (save) the form.
+    e.preventDefault();
+    if (!comboOpen) openCombo();
+    else if (comboActive >= 0) pickAction(comboActive);
+  } else if (e.key === 'Escape' && comboOpen) {
+    e.preventDefault();
+    e.stopPropagation();
+    closeCombo();
+    $('actionPicker').select();
+  }
+};
+// Clicks in the list keep focus in the picker, so blur does not close it first.
+$('actionList').onmousedown = (e) => e.preventDefault();
+$('actionList').onclick = (e) => {
+  const option = e.target.closest('[role="option"]');
+  if (option) pickAction(Number(option.dataset.index));
+};
+$('actionList').onmousemove = (e) => {
+  const option = e.target.closest('[role="option"]');
+  if (option && Number(option.dataset.index) !== comboActive) setComboActive(Number(option.dataset.index));
+};
+// Shortcut fields: Record captures the next key press; typing by hand works too.
+for (const id of ['shortcutInput', 'ccwInput', 'cwInput']) {
+  wireRecorder($(id), () => {
+    markDirty();
+    renderShortcutHelp();
+  });
+  $(id).addEventListener('input', renderShortcutHelp);
+}
+window.addEventListener(
+  'keydown',
+  (e) => {
+    if (!recording) return;
+    // While recording, keys go to the recorder only: Ctrl+S records Ctrl + S instead of saving.
+    e.preventDefault();
+    e.stopPropagation();
+    const held = heldKeys(e),
+      key = keyName(e);
+    if (e.key === 'Escape' && !held.length) return stopRecording(false);
+    if (key && !MODIFIER_KEYS.includes(key)) {
+      recording.input.value = shortcutText([...held, key].join('+'));
+      return stopRecording(true);
+    }
+    recording.input.value = heldText(held);
+  },
+  true,
+);
+window.addEventListener(
+  'keyup',
+  (e) => {
+    if (!recording) return;
+    e.preventDefault();
+    e.stopPropagation();
+    recording.input.value = heldText(heldKeys(e));
+  },
+  true,
+);
+$('revertControl').onclick = () => {
+  loadEditor();
+  toast('Changes discarded');
+};
+// Which editor sections are open is kept in settings: pages loaded into WebView2 have no browser storage.
+const editorSections = () => [...document.querySelectorAll('#editorForm [data-section]')];
+function applySections(saved) {
+  for (const section of editorSections()) section.open = saved?.[section.dataset.section] !== false;
+}
+for (const section of editorSections())
+  section.addEventListener('toggle', () => {
+    if (!store) return;
+    const open = Object.fromEntries(editorSections().map((s) => [s.dataset.section, s.open]));
+    if (JSON.stringify(open) === JSON.stringify(store.settings.editorSections)) return;
+    store.settings.editorSections = open;
+    call('editorSections', open).catch(() => {});
+  });
 $('audioVolume').oninput = () => ($('clipGainValue').textContent = $('audioVolume').value + '%');
 $('colorInput').oninput = () => {
   $('colorHex').value = $('colorInput').value;
@@ -1228,7 +1661,7 @@ $('browseBtn').onclick = () =>
       markDirty();
     }
   });
-$('learnBtn').onclick = () => safe(() => call(state?.learning ? 'cancelLearn' : 'learn', target));
+$('learnBtn').onclick = () => safe(() => call(sameControl(state?.learning, target) ? 'cancelLearn' : 'learn', target));
 $('clearLearn').onclick = () => {
   draft.mapping = null;
   markDirty();

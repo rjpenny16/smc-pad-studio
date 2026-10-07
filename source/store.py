@@ -222,7 +222,17 @@ def settings(value):
         value['liveColor'] = '#ffffff'
     value['presetSamples'] = preset_samples(value.get('presetSamples'))
     value['window'] = window_size(value.get('window'))
+    value['editorSections'] = editor_sections(value.get('editorSections'))
     return value
+
+
+EDITOR_SECTIONS = ('action', 'light', 'physical')
+
+
+def editor_sections(value):
+    """Which pad editor sections are open; each is open unless it was closed."""
+    value = value if isinstance(value, dict) else {}
+    return {name: bool(value.get(name, True)) for name in EDITOR_SECTIONS}
 
 
 def window_size(value):
