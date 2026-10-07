@@ -6,6 +6,7 @@ import queue
 import re
 import shutil
 import struct
+import sys
 import tempfile
 import threading
 import time
@@ -14,11 +15,13 @@ from unittest.mock import patch
 import wave
 import zipfile
 
-from store import Store, validate_control, validate_profile, preset_locator
+from store import Store, validate_control, validate_profile, preset_locator, window_size
 from midi import RGB, encode, decode, bank_for_note, default_mapping
 from controller import Controller, matches, signature, delta, effective_mappings, VERSION
 from audio import Audio
 import actions
+import autostart
+import desktop
 import media
 import ui_bundle
 
@@ -859,6 +862,64 @@ class RegressionTests(unittest.TestCase):
                 self.assertEqual(len(controller.store.current()['pages']), 2)
             finally:
                 controller.close()
+
+    def test_window_opens_at_a_size_that_fits_the_screen(self):
+        self.assertEqual(desktop.fit_window(None, (2560, 1400)), (1440, 960, False))
+        self.assertEqual(desktop.fit_window(None, None), (1440, 960, False))
+        # A 1366x768 laptop, and 1920x1080 at 150% scaling, both minus the taskbar.
+        self.assertEqual(desktop.fit_window(None, (1366, 728)), (1284, 684, False))
+        self.assertEqual(desktop.fit_window(None, (1280, 680)), (1203, 650, False))
+        self.assertEqual(desktop.fit_window(None, (1024, 600)), (800, 650, True))
+        remembered = {'width': 1000, 'height': 700, 'maximized': True}
+        self.assertEqual(desktop.fit_window(remembered, (2560, 1400)), (1000, 700, True))
+        self.assertEqual(desktop.fit_window({'width': 3000, 'height': 2000}, (1920, 1040)), (1804, 977, False))
+        for state in ['connected', 'disconnected', 'error']:
+            for paused in [False, True]:
+                self.assertLessEqual(len(desktop.tray_text(state, paused)), 63)
+        self.assertEqual(desktop.tray_text('connected', False), 'SMC-PAD Studio: connected')
+        self.assertEqual(desktop.tray_text('connected', True), 'SMC-PAD Studio: mappings paused')
+
+    def test_window_size_is_remembered_and_sanitized(self):
+        self.assertIsNone(window_size(None))
+        self.assertIsNone(window_size({'width': 1000}))
+        self.assertEqual(
+            window_size({'width': 5, 'height': 99999}), {'width': 800, 'height': 10000, 'maximized': False}
+        )
+        with tempfile.TemporaryDirectory() as folder:
+            controller = Controller(folder, FakeTransport())
+            try:
+                controller.remember_window({'width': 1200, 'height': 800, 'maximized': True})
+            finally:
+                controller.close()
+            self.assertEqual(
+                Store(folder).data['settings']['window'], {'width': 1200, 'height': 800, 'maximized': True}
+            )
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows registry')
+    def test_autostart_registry_roundtrip(self):
+        import winreg
+
+        key = r'Software\SMC-PAD Studio Tests\Run'
+        try:
+            self.assertFalse(autostart.enabled(key))
+            autostart.set_enabled(True, key, '"C:\\Studio\\old.exe" --background')
+            self.assertTrue(autostart.enabled(key))
+            autostart.refresh(key)  # not frozen: leaves the entry alone
+            self.assertEqual(autostart._registered(key), '"C:\\Studio\\old.exe" --background')
+            with patch.object(autostart, 'command', return_value='"C:\\Studio\\new.exe" --background'):
+                autostart.refresh(key)
+            self.assertEqual(autostart._registered(key), '"C:\\Studio\\new.exe" --background')
+            autostart.set_enabled(False, key)
+            autostart.set_enabled(False, key)  # already off: no error
+            self.assertFalse(autostart.enabled(key))
+            with self.assertRaises(RuntimeError):
+                autostart.set_enabled(True, key)  # running from source has no EXE to register
+        finally:
+            for path in [key, r'Software\SMC-PAD Studio Tests']:
+                try:
+                    winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
+                except FileNotFoundError:
+                    pass
 
     def test_build_script_reads_the_version(self):
         # build.ps1 names the EXE from controller.VERSION with this regular expression.

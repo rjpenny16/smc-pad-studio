@@ -501,6 +501,7 @@ function renderLive(previous) {
   $('appVersion').textContent = 'v' + state.version;
   $('aboutVersion').textContent = 'SMC-PAD Studio ' + state.version;
   $('undoBtn').disabled = !state.canUndo;
+  renderAutostart();
   $('connectionDot').classList.toggle('on', connected);
   $('railStatus').textContent = connected
     ? 'Background MIDI active'
@@ -632,6 +633,14 @@ function renderHits(previous) {
     el.hitTimer = setTimeout(() => el.classList.remove('hit'), 450);
   }
   lastHit = Math.max(lastHit, newest);
+}
+function renderAutostart() {
+  const autostart = state?.autostart || { available: false, enabled: false };
+  $('startWithWindows').checked = autostart.enabled;
+  $('startWithWindows').disabled = !autostart.available;
+  $('startWithWindowsHelp').textContent = autostart.available
+    ? 'Opens quietly in the tray, so your pads work as soon as the controller is plugged in.'
+    : 'Available in the SMC-PAD Studio EXE. When running from source, start it yourself.';
 }
 function renderPlayingPads() {
   if (!state) return;
@@ -1392,6 +1401,15 @@ $('liveColor').onchange = () => safe(() => mutate('settings', { liveColor: $('li
 for (const id of ['autoConnect', 'autoProfiles', 'reducedMotion', 'liveFeedback'])
   $(id).onchange = () => safe(() => mutate('settings', { [id]: $(id).checked }));
 $('quitApp').onclick = () => safe(() => call('quit'));
+$('startWithWindows').onchange = () =>
+  safe(async () => {
+    try {
+      const on = await mutate('autostart', { enabled: $('startWithWindows').checked });
+      toast(on ? 'Studio will start in the tray when you sign in' : 'Studio will no longer start at sign-in');
+    } finally {
+      renderAutostart();
+    }
+  });
 function diagnostics() {
   $('diagnostics').classList.toggle('hidden');
 }

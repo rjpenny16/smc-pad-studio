@@ -44,6 +44,7 @@ def visible_error(message):
 def main():
     controller = None
     tray = None
+    tray_items = {}
     mutex = None
     show_event = None
     window = None
@@ -63,12 +64,17 @@ def main():
             raise C.WinError(C.get_last_error())
         existing = C.get_last_error() == 183
         show_event = kernel.CreateEventW(None, False, False, 'Local\\SMCPADStudio.Show' + instance_suffix)
+        # --background is the sign-in launch: start in the tray and never pop up a running window.
+        background = '--background' in sys.argv
         if existing:
-            kernel.SetEvent(show_event)
-            logging.info('Existing instance restored')
+            if not background:
+                kernel.SetEvent(show_event)
+                logging.info('Existing instance restored')
             return 0
         import webview
+        import autostart
         from controller import Controller, VERSION
+        import desktop
         import ui_bundle
         import clr  # noqa: F401  (loads the CLR so the System import below works)
         from System import Action
@@ -76,19 +82,56 @@ def main():
         logging.info('SMC-PAD Studio %s', VERSION)
         # UI checks stay deterministic: they connect only when a hardware flag asks for it.
         controller = Controller(ROOT, auto_connect='--ui-check' not in sys.argv)
+        try:
+            autostart.refresh()
+        except Exception:
+            logging.exception('Could not update the sign-in launch entry')
         base = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
         html = ui_bundle.load(base / 'ui')
+        width, height, maximized = desktop.fit_window(
+            controller.store.data['settings'].get('window'), desktop.work_area()
+        )
         window = webview.create_window(
             'SMC-PAD Studio',
             html=html,
             js_api=Bridge(controller),
-            width=1440,
-            height=960,
-            min_size=(800, 650),
+            width=width,
+            height=height,
+            maximized=maximized,
+            hidden=background,
+            min_size=desktop.MIN_SIZE,
             background_color='#0c0e12',
             text_select=False,
         )
         controller.window = window
+
+        def dark_title_bar(renderer):
+            # The interface is always dark. pywebview themes the title bar from the Windows
+            # app theme; runs after its WinForms backend loads and before the form exists.
+            try:
+                from webview.platforms import winforms
+
+                winforms.BrowserView.BrowserForm.is_dark_theme = lambda self: True
+            except Exception:
+                logging.exception('Dark title bar unavailable')
+
+        window.events.initialized += dark_title_bar
+        # The normal (not maximized) size and the maximized state, saved for the next launch.
+        remembered = {'width': width, 'height': height, 'maximized': maximized}
+
+        def resized(width, height):
+            try:
+                state = int(window.native.WindowState)  # FormWindowState: 0 normal, 1 minimized, 2 maximized
+            except Exception:
+                state = 2 if remembered['maximized'] else 0
+            if state == 0:
+                remembered.update(width=width, height=height, maximized=False)
+            elif state == 2:
+                remembered['maximized'] = True
+
+        window.events.resized += resized
+        window.events.maximized += lambda: remembered.update(maximized=True)
+        window.events.restored += lambda: remembered.update(maximized=False)
 
         def closing():
             if not controller.quitting:
@@ -129,17 +172,19 @@ def main():
                     tray.Icon = (
                         Icon(str(base / 'studio.ico')) if (base / 'studio.ico').exists() else SystemIcons.Application
                     )
-                    tray.Text = 'SMC-PAD Studio — background MIDI'
+                    tray.Text = desktop.tray_text(controller.connection.get('state'), controller.paused)
                     menu = ContextMenuStrip()
                     for title, handler in [
                         ('Open Studio', lambda: show()),
-                        ('Pause / resume mappings', lambda: controller.request('pause')),
+                        ('Pause mappings', lambda: controller.request('pause')),
                         ('Stop all audio', lambda: controller.request('stopAudio')),
                         ('Quit Studio', lambda: controller.request('quit')),
                     ]:
                         item = ToolStripMenuItem(title)
                         item.Click += lambda sender, event, handler=handler: handler()
                         menu.Items.Add(item)
+                        if title == 'Pause mappings':
+                            tray_items['pause'] = item
                     tray.ContextMenuStrip = menu
                     tray.DoubleClick += lambda sender, event: show()
                     tray.Visible = True
@@ -154,6 +199,12 @@ def main():
                     logging.info('Tray installed and external navigation blocked')
 
                 window.native.Invoke(Action(setup_native))
+
+                def update_tray():
+                    paused = controller.paused
+                    tray.Text = desktop.tray_text(controller.connection.get('state'), paused)
+                    tray_items['pause'].Text = 'Resume mappings' if paused else 'Pause mappings'
+                    tray_items['pause'].Checked = paused
 
                 def dropped(event):
                     files = event.get('dataTransfer', {}).get('files', [])
@@ -177,9 +228,24 @@ def main():
                 visible_error('The desktop interface loaded, but native setup failed. See startup.log.')
                 controller.quitting = True
                 window.destroy()
+            saved_size = dict(remembered)
+            tray_status = None
             while not controller.stop.is_set() and not controller.quitting:
                 if kernel.WaitForSingleObject(show_event, 500) == 0:
                     show()
+                if remembered != saved_size:
+                    saved_size = dict(remembered)
+                    try:
+                        controller.remember_window(saved_size)
+                    except Exception:
+                        logging.exception('Could not remember the window size')
+                status = (controller.connection.get('state'), controller.paused)
+                if tray is not None and 'pause' in tray_items and status != tray_status:
+                    tray_status = status
+                    try:
+                        window.native.BeginInvoke(Action(update_tray))
+                    except Exception:
+                        logging.exception('Tray update failed')
 
         webview.start(
             initialize,

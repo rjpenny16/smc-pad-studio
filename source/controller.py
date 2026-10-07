@@ -16,9 +16,10 @@ import uuid
 
 import actions
 from audio import Audio
+import autostart
 import media
 from midi import Transport, RGB, ports, bank_for_note, default_mapping, DEVICE_NAMES, NOTE_GROUP
-from store import Store, profile, page, validate_control, number, preset_locator, AUDIO_EXTS, BANKS
+from store import Store, profile, page, validate_control, number, preset_locator, window_size, AUDIO_EXTS, BANKS
 
 VERSION = '0.8.0'
 # Boolean settings the interface may switch.
@@ -158,6 +159,7 @@ class Controller:
         self._connect_failures = 0
         self.hits = deque(maxlen=16)
         self.hit_seq = 0
+        self.autostart = self._autostart_state()
         self.performance_auto = False
         self.performance_candidates = set()
         self.rgb_epoch = 0
@@ -634,6 +636,19 @@ class Controller:
             except Exception as exc:
                 self.event('error', {'message': 'Background check: ' + str(exc)})
 
+    @staticmethod
+    def _autostart_state():
+        try:
+            return {'available': autostart.command() is not None, 'enabled': autostart.enabled()}
+        except Exception:  # no registry (tests on other systems)
+            return {'available': False, 'enabled': False}
+
+    def remember_window(self, size):
+        """Keep the window's normal size and maximized state for the next launch."""
+        with self.lock, self.store.lock:
+            self.store.data['settings']['window'] = window_size(size)
+            self.store.persist()
+
     def _edit_label(self, command, data, p):
         """What Undo calls this command, or None when it is not an undoable edit."""
         if command == 'saveControl':
@@ -688,6 +703,7 @@ class Controller:
                     'learning': self.learning,
                     'learned': self.learned,
                     'hits': list(self.hits),
+                    'autostart': dict(self.autostart),
                     'factoryNotes': {bank: 4 + group * 16 for bank, group in NOTE_GROUP.items()},
                     'midi': self.last_midi,
                     'calibration': copy.deepcopy(self.calibration),
@@ -781,6 +797,10 @@ class Controller:
                 self.store.persist()
                 self._changed()
                 return True
+        if command == 'autostart':
+            autostart.set_enabled(bool(data.get('enabled')))
+            self.autostart = self._autostart_state()
+            return self.autostart['enabled']
         if command == 'pause':
             self.paused = bool(data.get('paused', not self.paused))
             self.cancel_macros()

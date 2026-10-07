@@ -221,7 +221,20 @@ def settings(value):
     if not re.fullmatch(r'#[0-9a-fA-F]{6}', str(value.get('liveColor', ''))):
         value['liveColor'] = '#ffffff'
     value['presetSamples'] = preset_samples(value.get('presetSamples'))
+    value['window'] = window_size(value.get('window'))
     return value
+
+
+def window_size(value):
+    """A remembered window size {width, height, maximized} in logical pixels, or None."""
+    try:
+        return {
+            'width': int(number(value['width'], 1440, 800, 10000)),
+            'height': int(number(value['height'], 960, 650, 10000)),
+            'maximized': bool(value.get('maximized', False)),
+        }
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
 
 
 def profile(name='My SMC-PAD'):
