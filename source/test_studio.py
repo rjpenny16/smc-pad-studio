@@ -1,6 +1,5 @@
 """Regression checks; safe to run without executing shortcuts or hardware writes."""
 
-import json
 import math
 from pathlib import Path
 import queue
@@ -17,7 +16,17 @@ from unittest.mock import patch
 import wave
 import zipfile
 
-from store import Store, validate_control, validate_profile, preset_locator, window_size, editor_sections, iter_clips
+from store import (
+    Store,
+    profile,
+    validate_control,
+    validate_profile,
+    preset_locator,
+    window_size,
+    editor_sections,
+    iter_clips,
+)
+from library import Library
 from midi import RGB, encode, decode, bank_for_note, default_mapping
 from controller import Controller, matches, signature, delta, effective_mappings, VERSION
 from audio import Audio
@@ -1066,8 +1075,9 @@ class RegressionTests(unittest.TestCase):
                 self.assertEqual((pads['pad1']['value'], pads['pad1']['audioName']), (renamed['path'], 'Air horn.wav'))
                 self.assertEqual(pads['pad2']['steps'][0]['value'], renamed['path'])
                 undone = controller.store.undo[-1][1]
-                self.assertIn(renamed['path'], json.dumps(undone))
-                self.assertNotIn(first['path'], json.dumps(undone))
+                self.assertEqual(
+                    [h['value'] for p in undone['profiles'] for *_, h in iter_clips(p)], [renamed['path']] * 2
+                )
                 # Only files inside the library can be renamed or removed.
                 self.assertFalse(controller.request('renameClip', {'path': str(source), 'name': 'x'})['ok'])
                 self.assertFalse(controller.request('removeClip', {'path': str(source)})['ok'])
@@ -1079,6 +1089,26 @@ class RegressionTests(unittest.TestCase):
                 self.assertEqual(controller.request('snapshot')['value']['missingClips'], ['pad1', 'pad2'])
             finally:
                 controller.close()
+
+    def test_clip_rename_finds_references_however_the_folder_is_spelled(self):
+        # Windows may store the data folder with 8.3 short names (C:\Users\RUNNER~1) while the
+        # resolved path is long. A symbolic link gives the same two spellings of one folder here.
+        with tempfile.TemporaryDirectory() as folder:
+            real, alias = Path(folder) / 'real', Path(folder) / 'alias'
+            real.mkdir()
+            try:
+                alias.symlink_to(real, target_is_directory=True)
+            except OSError:
+                self.skipTest('Symbolic links are not available')
+            library = Library(alias / 'Audio')
+            clip = library.folder / ('0' * 32 + '-Horn.wav')
+            library.folder.mkdir()
+            clip.write_bytes(b'RIFF')
+            data = {'profiles': [profile()]}
+            pad = data['profiles'][0]['pages'][0]['banks']['A']['pad1']
+            pad.update(action='playAudio', value=str(clip), audioName='Horn.wav')
+            new = library.rename(library.resolve(str(clip)), 'Air horn', [data])
+            self.assertEqual((pad['value'], pad['audioName']), (str(new), 'Air horn.wav'))
 
     def test_clip_lengths_are_read_in_the_background(self):
         header = b'Input #0, wav, from x.wav:\n  Duration: 00:01:03.45, bitrate: 128 kb/s\n'

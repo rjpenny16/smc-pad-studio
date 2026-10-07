@@ -17,8 +17,9 @@ def display_name(path):
 
 
 def path_key(path):
-    """Compare paths the way Windows does: absolute and case-insensitive."""
-    return os.path.normcase(os.path.abspath(path))
+    """Compare paths the way Windows does: fully resolved and case-insensitive. realpath also turns
+    8.3 short names (C:\\Users\\RUNNER~1) into long ones, and works for a file that no longer exists."""
+    return os.path.normcase(os.path.realpath(path))
 
 
 def same_file(a, b):
@@ -102,11 +103,12 @@ class Library:
             return path
         if new.exists() and not same_file(new, path):
             raise ValueError('Another clip already has that name')
+        old = path_key(path)
         path.rename(new)
         for data in documents:
             for p in data['profiles']:
                 for pg, bank, cid, holder in iter_clips(p):
-                    if holder['value'] and same_file(holder['value'], path):
+                    if holder['value'] and path_key(holder['value']) == old:
                         holder['value'] = str(new)
                         if holder is pg['banks'][bank][cid]:
                             holder['audioName'] = display_name(new)
