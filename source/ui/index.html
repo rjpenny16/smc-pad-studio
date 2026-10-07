@@ -130,6 +130,11 @@
                 ><button id="bankG" title="Bank G · default pad notes 4–19" aria-label="Bank G">G</button
                 ><button id="bankH" title="Bank H · default pad notes 20–35" aria-label="Bank H">H</button>
               </div>
+              <span
+                class="tag hidden"
+                id="hardwareBank"
+                title="The bank chosen by the PAD BANK switch on the controller"
+              ></span>
               <button class="btn" id="performanceBtn">
                 <svg><use href="#i-play" /></svg>Performance
               </button>
@@ -599,6 +604,14 @@
                   <label class="check"
                     ><input type="checkbox" id="reducedMotion" />Reduce motion and visual transitions</label
                   >
+                  <hr class="section-rule" />
+                  <label class="check"
+                    ><input type="checkbox" id="extraBanks" />Show extra note banks (C–H) in Studio</label
+                  >
+                  <p class="helper">
+                    Banks A and B follow the controller's PAD BANK switch. Banks C–H answer other MIDI note ranges; turn
+                    this on only if your controller was set up to send them. Banks already in use always show.
+                  </p>
                   <hr class="section-rule" />
                   <label class="check"
                     ><input type="checkbox" id="liveFeedback" />Light pads while their audio clips play</label

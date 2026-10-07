@@ -212,7 +212,7 @@ def preset_locator(samples):
 def settings(value):
     value = dict(value) if isinstance(value, dict) else {}
     value['masterVolume'] = number(value.get('masterVolume'), 100, 0, 100)
-    for key in ['autoProfiles', 'reducedMotion', 'liveFeedback']:
+    for key in ['autoProfiles', 'reducedMotion', 'liveFeedback', 'extraBanks']:
         value[key] = bool(value.get(key, False))
     value['autoConnect'] = bool(value.get('autoConnect', True))
     value['hardwarePreset'] = int(number(value.get('hardwarePreset'), 0, 0, 7))

@@ -191,7 +191,11 @@ function renderStore() {
   let p = current();
   setOptions($('profileSelect'), store.profiles, store.activeProfile);
   setOptions($('pageSelect'), p.pages, p.activePage);
-  for (const b of 'ABCDEFGH') $('bank' + b).classList.toggle('active', p.activeBank === b);
+  for (const b of 'ABCDEFGH') {
+    $('bank' + b).classList.toggle('active', p.activeBank === b);
+    $('bank' + b).classList.toggle('hidden', !bankVisible(p, b));
+  }
+  $('extraBanks').checked = !!store.settings.extraBanks;
   $('rgbPreset').value = String(store.settings.hardwarePreset ?? 0);
   $('liveFeedback').checked = !!store.settings.liveFeedback;
   $('liveColor').value = store.settings.liveColor || '#ffffff';
@@ -207,6 +211,12 @@ function renderStore() {
   document.body.classList.toggle('reduced-motion', store.settings.reducedMotion);
   renderBoard();
   renderProfiles();
+}
+// Banks C-H are for controllers that send other note ranges, so they show only when wanted or in use.
+function bankVisible(p, b) {
+  if ('AB'.includes(b) || store.settings.extraBanks || p.activeBank === b) return true;
+  const bank = page().banks[b];
+  return !!bank && Object.values(bank).some((c) => c.action !== 'none' || c.mapping);
 }
 function renderBoard() {
   if (!store) return;
@@ -524,6 +534,11 @@ function renderLive(previous) {
   // The only primary button in the top bar, and only while there is something to do.
   $('connectBtn').classList.toggle('primary', !connected);
   $('canvasStatus').textContent = connected ? 'Live' : 'Offline';
+  // Which bank the PAD BANK switch has selected, so the app and the controller are visibly in step.
+  const hardwareBank = connected ? state.rgb.activeBank : null;
+  $('hardwareBank').classList.toggle('hidden', !hardwareBank);
+  if (hardwareBank) $('hardwareBank').textContent = 'Controller: Bank ' + hardwareBank;
+  for (const b of 'AB') $('bank' + b).classList.toggle('on-controller', hardwareBank === b);
   $('canvasStatus').className = 'tag' + (connected ? ' good' : '');
   $('deviceStatusTag').textContent = state.connection.state[0].toUpperCase() + state.connection.state.slice(1);
   $('deviceStatusTag').className = 'tag' + (connected ? ' good' : ' warn');
@@ -1421,7 +1436,7 @@ $('librarySearch').oninput = renderLibrary;
 $('masterVolume').oninput = () => ($('masterValue').textContent = $('masterVolume').value + '%');
 $('masterVolume').onchange = () => safe(() => mutate('masterVolume', { volume: Number($('masterVolume').value) }));
 $('liveColor').onchange = () => safe(() => mutate('settings', { liveColor: $('liveColor').value }));
-for (const id of ['autoConnect', 'autoProfiles', 'reducedMotion', 'liveFeedback'])
+for (const id of ['autoConnect', 'autoProfiles', 'reducedMotion', 'liveFeedback', 'extraBanks'])
   $(id).onchange = () => safe(() => mutate('settings', { [id]: $(id).checked }));
 $('quitApp').onclick = () => safe(() => call('quit'));
 $('startWithWindows').onchange = () =>

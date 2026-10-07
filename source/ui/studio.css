@@ -1367,3 +1367,15 @@ body.reduced-motion * {
   align-self: center;
   padding: 0 6px;
 }
+
+/* The bank the controller's PAD BANK switch has selected. */
+.segmented button.on-controller::after {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 5px;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: var(--accent);
+}

@@ -23,7 +23,7 @@ from store import Store, profile, page, validate_control, number, preset_locator
 
 VERSION = '0.8.0'
 # Boolean settings the interface may switch.
-SETTING_SWITCHES = ['autoProfiles', 'reducedMotion', 'liveFeedback', 'autoConnect']
+SETTING_SWITCHES = ['autoProfiles', 'reducedMotion', 'liveFeedback', 'autoConnect', 'extraBanks']
 # Commands that edit profile content; anything else here is navigation or a preference.
 EDITS = {
     'copyControls': 'Copy configuration',

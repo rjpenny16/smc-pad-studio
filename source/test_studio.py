@@ -921,6 +921,16 @@ class RegressionTests(unittest.TestCase):
                 except FileNotFoundError:
                     pass
 
+    def test_extra_note_banks_are_hidden_unless_turned_on(self):
+        with tempfile.TemporaryDirectory() as folder:
+            controller = Controller(folder, FakeTransport())
+            try:
+                self.assertFalse(controller.store.data['settings']['extraBanks'])
+                self.assertTrue(controller.request('settings', {'extraBanks': True})['ok'])
+            finally:
+                controller.close()
+            self.assertTrue(Store(folder).data['settings']['extraBanks'])
+
     def test_build_script_reads_the_version(self):
         # build.ps1 names the EXE from controller.VERSION with this regular expression.
         script = (Path(__file__).parent / 'build.ps1').read_text(encoding='utf8')
