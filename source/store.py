@@ -215,6 +215,8 @@ def settings(value):
     for key in ['autoProfiles', 'reducedMotion', 'liveFeedback', 'extraBanks']:
         value[key] = bool(value.get(key, False))
     value['autoConnect'] = bool(value.get('autoConnect', True))
+    # Sync colors also saves them to the controller's memory unless this is turned off.
+    value['saveOnSync'] = bool(value.get('saveOnSync', True))
     value['hardwarePreset'] = int(number(value.get('hardwarePreset'), 0, 0, 7))
     import re
 

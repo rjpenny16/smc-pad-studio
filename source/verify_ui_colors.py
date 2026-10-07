@@ -1,4 +1,4 @@
-"""Explicit native Apply-colors test; used only with --ui-check --hardware-colors.
+"""Explicit native Sync-colors test; used only with --ui-check --hardware-colors.
 
 Runs against isolated verification profiles and restores the full device color
 snapshot. Physical LED observation is still a separate human verification.
@@ -22,7 +22,9 @@ def check_colors(window, controller, root):
     try:
         window.show()
         for bank, color in [('A', '#ffffff'), ('B', '#00ff00')]:
+            # Sync without saving to the controller's memory, so the temporary colors never persist.
             script = """(async()=>{
+              await mutate('settings',{saveOnSync:false});
               await mutate('switchPage',{bank:BANK});
               const ctx=context();
               for(let i=1;i<=16;i++){
@@ -30,7 +32,7 @@ def check_colors(window, controller, root):
                 await call('saveControl',{...ctx,id,control:{...controls()[id],color:COLOR}});
               }
               await refresh();loadEditor();
-              if(document.getElementById('applyRGB').disabled)throw Error('Apply colors is disabled');
+              if(document.getElementById('applyRGB').disabled)throw Error('Sync colors is disabled');
               document.getElementById('applyRGB').click();
               return true;
             })()""".replace('BANK', json.dumps(bank)).replace('COLOR', json.dumps(color))
@@ -57,7 +59,7 @@ def check_colors(window, controller, root):
                     break
                 time.sleep(0.1)
             else:
-                raise RuntimeError('Native Apply colors did not complete for Bank ' + bank)
+                raise RuntimeError('Native Sync colors did not complete for Bank ' + bank)
             written_preset = state['preset']
             actual = rgb.read_colors(written_preset, bank)
             if actual != {f'pad{i}': color for i in range(1, 17)}:

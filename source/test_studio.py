@@ -952,6 +952,76 @@ class RegressionTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 ui_bundle.load(folder)
 
+    def test_live_feedback_does_not_leave_a_read_showing(self):
+        # Lighting a playing pad may reopen the session; that must not look like a read in progress,
+        # which would also keep Sync, Read and Identify disabled.
+        with tempfile.TemporaryDirectory() as folder:
+            controller = Controller(folder, FakeTransport())
+            try:
+                controller.rgb.port = 0
+                controller.rgb.unlock()  # an earlier read
+                controller.rgb.ready = False  # then the session lapsed, as after a PAD BANK press
+                controller.store.data['settings'].update(liveFeedback=True, liveColor='#ff0000')
+                controller.audio.snapshot = lambda: {'players': [{'control': 'pad1'}]}
+                controller.event('rgb', {'state': 'available'})
+                controller._live_feedback()
+                self.assertIn(('A', 'pad1'), {(bank, cid) for _preset, bank, cid in controller.live_lit})
+                self.assertEqual(controller.rgb_state['state'], 'available')
+            finally:
+                controller.close()
+
+    def test_sync_writes_only_changed_pads_and_saves_when_all_succeed(self):
+        def sync(state, **outcome):
+            job = controller.request('syncRGB', {'bank': 'A'})['value']
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                done = controller.request('snapshot')['value']['rgb']['done']
+                if done and done['job'] == job and controller.rgb_state.get('state') == state:
+                    # The snapshot reports how the job ended, for the interface to announce.
+                    self.assertEqual(done, {'job': job, 'ok': True, **outcome})
+                    return controller.rgb_state['results']
+                time.sleep(0.02)
+            self.fail('Sync did not finish as ' + state + ': ' + str(controller.rgb_state.get('state')))
+
+        def writes():
+            return sum(cmd == 0x22 and int.from_bytes(data[5:8], 'little') > 0 for cmd, data in transport.sent)
+
+        with tempfile.TemporaryDirectory() as folder:
+            transport = FakeTransport()
+            controller = Controller(folder, transport)
+            try:
+                controller.rgb.port = 0
+                controller.rgb.unlock()
+                self.assertTrue(controller.store.data['settings']['saveOnSync'])
+                pads = controller.store.controls(bank='A')
+                # Pad 1 already shows its color (preset 1, Bank A starts at offset 0x418).
+                transport.memory[0x418:0x41B] = bytes.fromhex(pads['pad1']['color'][1:])
+                results = sync('saved', saved=True, failed=0)
+                self.assertEqual([r['pad'] for r in results], [f'pad{i}' for i in range(1, 17)])
+                self.assertTrue(all(r['ok'] for r in results))
+                self.assertEqual((writes(), transport.saves), (15, 1))
+                for i in range(16):
+                    address = 0x418 + i * 26
+                    self.assertEqual(transport.memory[address : address + 3].hex(), pads[f'pad{i + 1}']['color'][1:])
+                # Nothing differs now: Sync writes nothing but still saves.
+                sync('saved', saved=True, failed=0)
+                self.assertEqual((writes(), transport.saves), (15, 2))
+                # With saving turned off, Sync only applies.
+                self.assertTrue(controller.request('settings', {'saveOnSync': False})['ok'])
+                pads['pad2']['color'] = '#010203'
+                sync('synced', saved=False, failed=0)
+                self.assertEqual((writes(), transport.saves), (16, 2))
+                # A pad that fails its readback is never saved.
+                self.assertTrue(controller.request('settings', {'saveOnSync': True})['ok'])
+                pads['pad3']['color'] = '#040506'
+                transport.bad_readback = True
+                results = sync('partial', saved=False, failed=1)
+                self.assertFalse(next(r for r in results if r['pad'] == 'pad3')['ok'])
+                self.assertEqual(transport.saves, 2)
+            finally:
+                controller.close()
+            self.assertTrue(Store(folder).data['settings']['saveOnSync'])
+
     def test_editor_sections_are_remembered_without_an_undo_step(self):
         with tempfile.TemporaryDirectory() as folder:
             controller = Controller(folder, FakeTransport())

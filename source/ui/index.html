@@ -171,24 +171,58 @@
                     ><span id="canvasHint">Select to edit · Ctrl-click to select several</span>
                   </div>
                   <div class="rgb-controls">
-                    <span class="segmented-label">Pad lighting</span
-                    ><select id="rgbPreset" aria-label="Physical device preset"></select
-                    ><button class="btn tiny" id="readRGB">Read device</button
-                    ><button
-                      class="btn tiny"
-                      id="identifyRGB"
-                      title="Flash all 16 pads of this preset and bank white, then restore them"
-                    >
-                      Identify</button
-                    ><button
+                    <span class="segmented-label">Pad lighting</span>
+                    <span class="tag" id="rgbStatus">Not read yet</span>
+                    <select id="rgbPreset" class="hidden" aria-label="Preset shown on the controller"></select>
+                    <button
                       class="btn tiny hidden"
                       id="confirmPresetBar"
-                      title="Teach Studio which preset the hardware is using"
+                      title="Teach Studio which preset the controller is using"
                     >
-                      Pads flashed ✓</button
-                    ><button class="btn tiny primary" id="applyRGB">Apply colors</button
-                    ><button class="btn ghost tiny" id="cancelRGB">Cancel</button
-                    ><span class="tag" id="rgbStatus">Not read</span>
+                      Pads flashed ✓
+                    </button>
+                    <div class="spacer"></div>
+                    <button class="btn ghost tiny hidden" id="cancelRGB">Cancel</button>
+                    <button class="btn tiny" id="readRGB" title="Read the pad colors stored on the controller">
+                      Read
+                    </button>
+                    <div class="menu">
+                      <button
+                        class="btn tiny"
+                        id="rgbMore"
+                        aria-haspopup="menu"
+                        aria-expanded="false"
+                        aria-controls="rgbMenu"
+                        title="More lighting actions"
+                      >
+                        <svg><use href="#i-more" /></svg><span class="sr-only">More lighting actions</span>
+                      </button>
+                      <div class="menu-list hidden" id="rgbMenu" role="menu" aria-labelledby="rgbMore">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          id="identifyRGB"
+                          title="Flash this bank's 16 pads white, then restore them"
+                        >
+                          Identify preset
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          id="adoptRGBBar"
+                          title="Replace this bank's colors in Studio with the ones on the controller"
+                        >
+                          Use controller colors
+                        </button>
+                      </div>
+                    </div>
+                    <button
+                      class="btn tiny primary"
+                      id="applyRGB"
+                      title="Send this bank's pad colors to the controller"
+                    >
+                      Sync colors
+                    </button>
                   </div>
                 </div>
                 <div class="info-cards">
@@ -572,97 +606,104 @@
           </section>
           <section id="view-device" class="hidden">
             <div class="device-layout">
-              <div class="panel">
-                <div class="panel-head">
-                  <h3 style="margin: 0">SMC-PAD connection</h3>
-                  <span class="tag" id="deviceStatusTag">Disconnected</span>
-                </div>
-                <div class="panel-body">
-                  <div class="status-line">
-                    <div class="large-status">
-                      <svg><use href="#i-device" /></svg>
-                    </div>
-                    <div>
-                      <h2>SMC-PAD</h2>
-                      <p class="muted" id="deviceMessage">Connect USB to begin.</p>
-                    </div>
-                  </div>
-                  <div class="field">
-                    <label for="performanceInput">Performance input</label
-                    ><select id="performanceInput">
-                      <option value="">Auto discover SMC-PAD</option>
-                    </select>
-                  </div>
-                  <div class="row2">
-                    <div class="field">
-                      <label for="rgbInputPort">Configuration input</label
-                      ><select id="rgbInputPort">
-                        <option value="">Auto discover</option>
-                      </select>
-                    </div>
-                    <div class="field">
-                      <label for="rgbOutputPort">Configuration output</label
-                      ><select id="rgbOutputPort">
-                        <option value="">Auto discover</option>
-                      </select>
-                    </div>
-                  </div>
-                  <p class="helper">
-                    Windows may label configuration ports MIDIIN2/3 and MIDIOUT2/3. Discovery sends only read requests.
-                    Close MidiSuite if the device is busy.
-                  </p>
-                  <div class="row" style="margin-top: 16px">
-                    <button class="btn primary" id="deviceConnect">Connect</button
-                    ><button class="btn" id="deviceDisconnect">Disconnect</button>
-                  </div>
-                  <hr class="section-rule" />
-                  <h3>Physical color palette</h3>
-                  <p class="muted">
-                    Read colors, edit locally, then apply. Every successful write is checked against the device.
-                  </p>
-                  <p class="helper">
-                    Studio reads the active preset and PAD BANK switch directly from the device.
-                    <b>Apply palette</b> updates that preset; the hardware never switches presets during a color write.
-                    PAD BANK off is Bank A, and PAD BANK on is Bank B. Choose <b>Identify</b> to flash the selected bank
-                    white and restore its colors.
-                  </p>
-                  <p class="helper" id="presetDetect"></p>
-                  <div class="row hidden" id="identifyConfirm" style="margin-top: 8px">
-                    <span class="muted" id="identifyQuestion"></span
-                    ><button class="btn primary" id="confirmPreset">Pads flashed: use this preset</button>
-                  </div>
-                  <div class="row" style="margin-top: 14px">
-                    <button class="btn" id="deviceRead">Read colors</button
-                    ><button class="btn" id="deviceIdentify">Identify preset</button
-                    ><button class="btn" id="adoptRGB">Use device palette</button
-                    ><button class="btn primary" id="deviceApply">Apply palette</button
-                    ><button
-                      class="btn"
-                      id="deviceSave"
-                      title="Ask the device to keep its current colors after it is unplugged"
-                    >
-                      Save to device
-                    </button>
-                  </div>
-                  <div id="rgbResults" style="margin-top: 16px"></div>
-                </div>
-              </div>
-              <div>
+              <div class="device-main">
                 <div class="panel">
                   <div class="panel-head">
-                    <h3 style="margin: 0">Available MIDI endpoints</h3>
-                    <button class="btn tiny" id="refreshPorts">Refresh</button>
+                    <h3 style="margin: 0">Connection</h3>
+                    <span class="tag" id="deviceStatusTag">Disconnected</span>
                   </div>
-                  <div class="panel-body port-list" id="portList">Scanning…</div>
-                </div>
-                <div class="panel" style="margin-top: 18px">
-                  <div class="panel-head"><h3 style="margin: 0">Connection health</h3></div>
                   <div class="panel-body">
-                    <div id="healthInfo" class="muted"></div>
-                    <button class="btn" id="exportDiagnostics" style="margin-top: 16px">
-                      Export troubleshooting report
-                    </button>
+                    <div class="status-line">
+                      <div class="large-status">
+                        <svg><use href="#i-device" /></svg>
+                      </div>
+                      <div>
+                        <h2>SMC-PAD</h2>
+                        <p class="muted" id="deviceMessage">Connect USB to begin.</p>
+                      </div>
+                    </div>
+                    <div class="row">
+                      <button class="btn primary" id="deviceConnect">Connect</button
+                      ><button class="btn" id="deviceDisconnect">Disconnect</button>
+                    </div>
+                    <details class="disclosure">
+                      <summary>Choose MIDI ports yourself</summary>
+                      <div class="field">
+                        <label for="performanceInput">Performance input</label
+                        ><select id="performanceInput">
+                          <option value="">Auto discover SMC-PAD</option>
+                        </select>
+                      </div>
+                      <div class="row2">
+                        <div class="field">
+                          <label for="rgbInputPort">Configuration input</label
+                          ><select id="rgbInputPort">
+                            <option value="">Auto discover</option>
+                          </select>
+                        </div>
+                        <div class="field">
+                          <label for="rgbOutputPort">Configuration output</label
+                          ><select id="rgbOutputPort">
+                            <option value="">Auto discover</option>
+                          </select>
+                        </div>
+                      </div>
+                      <p class="helper">
+                        Windows may label configuration ports MIDIIN2/3 and MIDIOUT2/3. Discovery sends only read
+                        requests. Close MidiSuite if the device is busy.
+                      </p>
+                    </details>
                   </div>
+                </div>
+                <div class="panel">
+                  <div class="panel-head">
+                    <h3 style="margin: 0">Pad lighting</h3>
+                    <span class="tag" id="deviceRgbStatus">Not read yet</span>
+                  </div>
+                  <div class="panel-body">
+                    <p class="muted">
+                      Sync colors sends the current bank's pad colors to the controller. Only pads that differ are
+                      written, and every write is checked against the controller.
+                    </p>
+                    <p class="helper" id="syncSaveNote"></p>
+                    <p class="helper" id="presetDetect"></p>
+                    <div class="row hidden" id="identifyConfirm" style="margin-top: 8px">
+                      <span class="muted" id="identifyQuestion"></span
+                      ><button class="btn primary" id="confirmPreset">Pads flashed: use this preset</button>
+                    </div>
+                    <div class="row wrap" style="margin-top: 14px">
+                      <button class="btn primary" id="deviceApply">Sync colors</button
+                      ><button class="btn" id="deviceRead">Read colors</button
+                      ><button class="btn" id="deviceIdentify">Identify preset</button
+                      ><button class="btn" id="adoptRGB">Use controller colors</button
+                      ><button
+                        class="btn hidden"
+                        id="deviceSave"
+                        title="Keep the colors on the controller after it is unplugged"
+                      >
+                        Save to controller memory
+                      </button>
+                    </div>
+                    <p class="helper">
+                      PAD BANK off shows Bank A and on shows Bank B. Identify preset flashes the bank white, then
+                      restores it, so you can tell which stored preset the controller is showing.
+                    </p>
+                    <div id="rgbResults"></div>
+                  </div>
+                </div>
+              </div>
+              <div class="panel">
+                <div class="panel-head">
+                  <h3 style="margin: 0">Diagnostics</h3>
+                  <button class="btn tiny" id="refreshPorts">Refresh ports</button>
+                </div>
+                <div class="panel-body">
+                  <div id="healthInfo" class="muted"></div>
+                  <h4 class="subheading">MIDI endpoints</h4>
+                  <div class="port-list" id="portList">Scanning…</div>
+                  <button class="btn" id="exportDiagnostics" style="margin-top: 16px">
+                    Export troubleshooting report
+                  </button>
                 </div>
               </div>
             </div>
@@ -708,6 +749,15 @@
                   <p class="helper">
                     Uses the preset the controller is on right now. Each pad returns to its stored color when playback
                     stops. Temporary colors are never saved to the device.
+                  </p>
+                  <hr class="section-rule" />
+                  <label class="check"
+                    ><input type="checkbox" id="saveOnSync" />Keep synced pad colors after unplugging the
+                    controller</label
+                  >
+                  <p class="helper">
+                    Sync colors then also saves them to the controller's memory. Turn this off to try colors out; Save
+                    to controller memory on the Device page keeps them later.
                   </p>
                   <hr class="section-rule" />
                   <h3>Background behavior</h3>

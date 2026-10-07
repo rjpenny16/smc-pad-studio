@@ -836,6 +836,37 @@ textarea {
   font-size: var(--fs-sm);
   color: var(--muted);
 }
+/* A small menu under a button (More lighting actions). It opens upward, inside its panel. */
+.menu {
+  position: relative;
+}
+.menu-list {
+  position: absolute;
+  z-index: 20;
+  right: 0;
+  bottom: calc(100% + 6px);
+  min-width: 210px;
+  padding: 4px;
+  background: #171b23;
+  border: 1px solid #3a4250;
+  border-radius: 10px;
+  box-shadow: 0 16px 36px #0009;
+}
+.menu-list button {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-size: var(--fs-md);
+  text-align: left;
+}
+.menu-list button:hover:not(:disabled),
+.menu-list button:focus-visible {
+  background: #262d39;
+  outline: none;
+}
 /* Shortcut field with a Record button. */
 .recorder {
   display: flex;
@@ -1299,6 +1330,76 @@ textarea {
   display: grid;
   grid-template-columns: minmax(0, 1.2fr) minmax(280px, 1fr);
   gap: 18px;
+}
+.health {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 16px;
+  margin: 0;
+  font-size: var(--fs-sm);
+}
+.health dt {
+  color: var(--muted);
+}
+.health dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.device-main {
+  display: grid;
+  gap: 18px;
+  align-content: start;
+}
+.row.wrap {
+  flex-wrap: wrap;
+}
+/* A quiet "show more" for settings most people never change. */
+.disclosure {
+  margin-top: var(--sp-4);
+  border-top: 1px solid var(--line);
+  padding-top: var(--sp-3);
+}
+.disclosure > summary {
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  margin-bottom: var(--sp-3);
+}
+.disclosure > summary:hover {
+  color: var(--text);
+}
+.disclosure:not([open]) > summary {
+  margin-bottom: 0;
+}
+/* Per-pad results of the last color operation, laid out like the pads on the controller. */
+.rgb-results {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: var(--sp-4);
+}
+.rgb-result {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.rgb-result i {
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--color);
+}
+.rgb-result.bad {
+  color: var(--danger);
+  border-color: #f28a9640;
 }
 .port-list {
   font:

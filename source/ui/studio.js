@@ -293,6 +293,7 @@ function renderStore() {
     $('bank' + b).classList.toggle('hidden', !bankVisible(p, b));
   }
   $('extraBanks').checked = !!store.settings.extraBanks;
+  $('saveOnSync').checked = store.settings.saveOnSync !== false;
   if (!sectionsApplied) {
     sectionsApplied = true;
     applySections(store.settings.editorSections);
@@ -530,7 +531,7 @@ async function saveEditor() {
   draft = cfg;
   await refresh();
   loadEditor();
-  toast(cfg.label + ' saved' + (recolored ? '. Apply colors to light it on the controller.' : ''));
+  toast(cfg.label + ' saved' + (recolored ? '. Sync colors to light it on the controller.' : ''));
 }
 function renderFields() {
   const action = $('actionSelect').value;
@@ -776,27 +777,78 @@ function renderSteps(focus = null) {
 }
 function renderColorState() {
   if (!draft || !state) return;
-  let sameContext = state.rgb.bank === target.bank && Number(state.rgb.preset) === Number($('rgbPreset').value);
-  let actual = sameContext ? state.rgb.colors?.[selected] : null;
-  $('colorState').textContent =
-    actual === draft.color
-      ? 'Stored on the device for Preset ' +
-        (Number($('rgbPreset').value) + 1) +
-        ', Bank ' +
-        target.bank +
-        '.' +
-        (state.rgb.activeBank && state.rgb.activeBank !== target.bank
-          ? ' Switch PAD BANK ' + (target.bank === 'B' ? 'on' : 'off') + ' to display these colors.'
-          : '')
-      : actual
-        ? 'Unsynced: physical pad is ' + actual + '. Apply to update it.'
-        : 'Local color. Read the device before applying changes.';
-  const status = actual === draft.color ? 'On the controller' : actual ? 'Not synced' : '';
+  const rgb = state.rgb,
+    preset = rgb.activePreset ?? Number($('rgbPreset').value);
+  const sameContext = rgb.bank === target.bank && Number(rgb.preset) === preset;
+  const actual = sameContext ? rgb.colors?.[selected]?.toLowerCase() : null;
+  const color = String(draft.color).toLowerCase();
+  let text;
+  if (actual === color) {
+    text = 'On the controller (Preset ' + (preset + 1) + ', Bank ' + target.bank + ').';
+    if (rgb.activeBank && rgb.activeBank !== target.bank)
+      text += ' Turn PAD BANK ' + (target.bank === 'B' ? 'on' : 'off') + ' to see it.';
+  } else if (actual) text = 'Differs from the controller (' + actual + '). Sync colors to update it.';
+  else
+    text =
+      state.connection.state === 'connected'
+        ? 'Sync colors to light this pad on the controller.'
+        : 'Connect the controller to light this pad.';
+  $('colorState').textContent = text;
+  const status = actual === color ? 'On the controller' : actual ? 'Differs from the controller' : '';
   renderOnChange(
     $('lightMeta'),
     [draft.color, status],
-    ([color, text]) => `<i class="meta-swatch" style="--color:${esc(color)}"></i>${esc(text)}`,
+    ([swatch, words]) => `<i class="meta-swatch" style="--color:${esc(swatch)}"></i>${esc(words)}`,
   );
+}
+// The lighting chip: what the controller shows compared with Studio's colors for this bank.
+function lightingStatus(connected) {
+  const rgb = state.rgb;
+  if (rgb.state === 'reading') return ['Reading ' + (rgb.progress || 0) + '%', ''];
+  if (rgb.state === 'writing') return ['Syncing ' + (rgb.progress || 0) + '%', ''];
+  if (!connected || !store) return ['Not connected', ''];
+  const problem = {
+    discovering: 'Finding the controller',
+    error: 'Needs attention',
+    partial: 'Some pads failed',
+    unavailable: 'Lighting unavailable',
+    stale: 'Changed on the controller',
+  }[rgb.state];
+  if (problem) return [problem, rgb.state === 'discovering' ? '' : 'warn'];
+  const preset = rgb.activePreset ?? Number($('rgbPreset').value);
+  const colors = rgb.bank === current().activeBank && Number(rgb.preset) === preset ? rgb.colors || {} : {};
+  const pads = Object.entries(controls()).filter(([cid]) => cid.startsWith('pad'));
+  if (!pads.every(([cid]) => colors[cid])) return ['Not read yet', ''];
+  const differ = pads.filter(([cid, c]) => colors[cid].toLowerCase() !== c.color.toLowerCase()).length;
+  const where = 'Preset ' + (preset + 1) + ' · Bank ' + rgb.bank + ': ';
+  if (differ) return [where + differ + (differ === 1 ? ' pad differs' : ' pads differ'), 'warn'];
+  return [where + 'colors match', 'good'];
+}
+// Results of the last color operation, laid out like the pads on the controller (13 to 16 on top).
+function renderRgbResults(results) {
+  if (!results.length) return '';
+  const cells = results.map((r) => {
+    const n = Number(r.pad.slice(3)) - 1;
+    return `<span class="rgb-result${r.ok ? '' : ' bad'}" style="order:${(3 - Math.floor(n / 4)) * 4 + (n % 4)}" title="${esc(r.ok ? 'Stored ' + r.color : r.error)}"><i style="--color:${esc(r.ok ? r.color : 'transparent')}"></i>${esc(controlTitle(r.pad))}</span>`;
+  });
+  const failed = results
+    .filter((r) => !r.ok)
+    .map((r) => `<p class="helper error">${esc(controlTitle(r.pad))}: ${esc(r.error)}</p>`);
+  return `<div class="rgb-results">${cells.join('')}</div>${failed.join('')}`;
+}
+// Color jobs run on the controller after the request returns; state.rgb.done says how the last one ended.
+const colorJobs = new Map();
+async function colorJob(command, data, describe = () => '') {
+  colorJobs.set(await call(command, data), describe);
+}
+function renderColorJobs() {
+  const done = state.rgb.done;
+  if (!done || !colorJobs.has(done.job)) return;
+  const describe = colorJobs.get(done.job);
+  colorJobs.delete(done.job);
+  if (!done.ok) return toast(done.message, true);
+  const text = describe(done);
+  if (text) toast(text);
 }
 function renderLive(previous) {
   if (!state) return;
@@ -814,6 +866,9 @@ function renderLive(previous) {
   $('connectBtn').querySelector('span').textContent = connected ? 'Reconnect' : 'Connect device';
   // The only primary button in the top bar, and only while there is something to do.
   $('connectBtn').classList.toggle('primary', !connected);
+  $('deviceConnect').textContent = connected ? 'Reconnect' : 'Connect';
+  $('deviceConnect').classList.toggle('primary', !connected);
+  $('deviceDisconnect').disabled = !connected;
   $('canvasStatus').textContent = connected ? 'Live' : 'Offline';
   // Which bank the PAD BANK switch has selected, so the app and the controller are visibly in step.
   const hardwareBank = connected ? state.rgb.activeBank : null;
@@ -833,56 +888,50 @@ function renderLive(previous) {
     $('lastMidiValue').textContent = state.midi.kind.toUpperCase() + ' ' + state.midi.value;
     $('lastMidiPort').textContent = state.midi.port + ' · Ch ' + state.midi.channel;
   }
-  let rgb = state.rgb;
-  $('rgbStatus').textContent =
-    rgb.state === 'reading'
-      ? 'Reading ' + (rgb.progress || 0) + '%'
-      : rgb.state === 'writing'
-        ? 'Applying ' + (rgb.progress || 0) + '%'
-        : {
-            notRead: 'Not read',
-            synced: 'Stored on device',
-            partial: 'Partial / failed',
-            available: 'Ready to read',
-            unavailable: 'Unavailable',
-            error: 'Needs attention',
-            discovering: 'Finding port',
-            stale: 'Changed on device',
-            saved: 'Saved to device',
-          }[rgb.state] || rgb.state;
+  const rgb = state.rgb,
+    busy = ['discovering', 'reading', 'writing'].includes(rgb.state);
+  const [status, tone] = lightingStatus(connected);
+  for (const id of ['rgbStatus', 'deviceRgbStatus']) {
+    $(id).textContent = status;
+    $(id).className = 'tag' + (tone ? ' ' + tone : '');
+  }
+  $('cancelRGB').classList.toggle('hidden', !['reading', 'writing'].includes(rgb.state));
   // Confirming a preset by eye is only needed when the device does not report it.
   let asked = rgb.activePreset == null ? rgb.identified : null;
   $('identifyConfirm').classList.toggle('hidden', !asked);
   $('confirmPresetBar').classList.toggle('hidden', !asked);
   if (asked) $('identifyQuestion').textContent = 'Did all 16 pads flash white for Preset ' + (asked.preset + 1) + '?';
+  // Picking the preset by hand is only needed while the controller does not report it.
+  $('rgbPreset').classList.toggle('hidden', !connected || rgb.activePreset != null);
   $('rgbPreset').disabled = rgb.activePreset != null;
   if (rgb.activePreset != null) $('rgbPreset').value = String(rgb.activePreset);
   $('presetDetect').textContent = rgb.presetDetection?.located
     ? 'Auto-detect is on' +
-      (rgb.activePreset != null ? ': the hardware is on Preset ' + (rgb.activePreset + 1) + '.' : '.')
-    : 'Connect the device to detect its active preset.';
-  $('deviceSave').disabled = !connected || ['discovering', 'reading', 'writing'].includes(rgb.state);
-  $('rgbStatus').className =
-    'tag' +
-    (['synced', 'saved'].includes(rgb.state)
-      ? ' good'
-      : ['error', 'partial', 'unavailable', 'stale'].includes(rgb.state)
-        ? ' warn'
-        : '');
-  for (const id of ['identifyRGB', 'deviceIdentify'])
-    $(id).disabled = !connected || ['discovering', 'reading', 'writing'].includes(rgb.state);
-  $('applyRGB').disabled = !connected || ['discovering', 'reading', 'writing'].includes(rgb.state);
-  $('readRGB').disabled = !connected || ['discovering', 'reading', 'writing'].includes(rgb.state);
-  renderOnChange($('rgbResults'), rgb.results || [], (results) =>
-    results
-      .map(
-        (r) =>
-          `<p class="helper" style="color:${r.ok ? 'var(--accent)' : 'var(--danger)'}">${esc(controlTitle(r.pad))} · ${r.ok ? 'Stored ' + esc(r.color) : esc(r.error)}</p>`,
-      )
-      .join(''),
+      (rgb.activePreset != null ? ': the controller is on Preset ' + (rgb.activePreset + 1) + '.' : '.')
+    : 'Connect the controller to detect its active preset.';
+  for (const id of ['applyRGB', 'deviceApply', 'readRGB', 'deviceRead', 'identifyRGB', 'deviceIdentify', 'deviceSave'])
+    $(id).disabled = !connected || busy;
+  // Using the controller's colors needs a read of this bank first.
+  const readHere = !!store && rgb.bank === current().activeBank && Object.keys(rgb.colors || {}).length > 0;
+  for (const id of ['adoptRGB', 'adoptRGBBar']) $(id).disabled = !readHere || busy;
+  const keep = store?.settings.saveOnSync !== false;
+  $('deviceSave').classList.toggle('hidden', keep);
+  $('syncSaveNote').textContent = keep
+    ? "Sync colors also saves them to the controller's memory, so they stay after unplugging. You can change this in Settings."
+    : "Sync colors does not save them to the controller's memory (see Settings), so they may reset when it is unplugged. Save to controller memory keeps them.";
+  renderOnChange($('rgbResults'), rgb.results || [], renderRgbResults);
+  const health = [
+    ['MIDI', state.connection.state[0].toUpperCase() + state.connection.state.slice(1)],
+    ['Pad lighting', status],
+    ['Dropped MIDI messages', String(state.droppedMidi)],
+    ['Audio', state.audio.error || 'Ready'],
+  ];
+  renderOnChange(
+    $('healthInfo'),
+    health,
+    (rows) => `<dl class="health">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>`,
   );
-  $('healthInfo').textContent =
-    `MIDI: ${state.connection.state}. Pad colors: ${$('rgbStatus').textContent.toLowerCase()}. Dropped MIDI messages: ${state.droppedMidi}. Audio: ${state.audio.error || 'ready'}.`;
+  renderColorJobs();
   renderPlayingPads();
   renderMixer();
   renderColorState();
@@ -1712,18 +1761,23 @@ $('refreshPorts').onclick = () =>
     await call('refresh');
     await refresh();
   });
-for (const id of ['readRGB', 'deviceRead']) $(id).onclick = () => safe(() => call('readRGB', rgbContext()));
+for (const id of ['readRGB', 'deviceRead']) $(id).onclick = () => safe(() => colorJob('readRGB', rgbContext()));
+// Sync colors: the bank's pads that differ are written; the setting decides whether they are also saved.
 for (const id of ['applyRGB', 'deviceApply'])
   $(id).onclick = () =>
     safe(async () => {
       if (dirty) await saveEditor();
-      await call('applyRGB', {
-        ...rgbContext(),
-        ids: multi.size ? [...multi].filter((id) => id.startsWith('pad')) : null,
-      });
+      await colorJob('syncRGB', rgbContext(), (done) =>
+        done.failed
+          ? ''
+          : done.saved
+            ? 'Pad colors synced and saved to the controller'
+            : 'Pad colors synced. They may reset when the controller is unplugged.',
+      );
     });
 $('cancelRGB').onclick = () => safe(() => call('cancelRGB'));
-for (const id of ['identifyRGB', 'deviceIdentify']) $(id).onclick = () => safe(() => call('identifyRGB', rgbContext()));
+for (const id of ['identifyRGB', 'deviceIdentify'])
+  $(id).onclick = () => safe(() => colorJob('identifyRGB', rgbContext()));
 for (const id of ['confirmPreset', 'confirmPresetBar'])
   $(id).onclick = () =>
     safe(async () => {
@@ -1734,8 +1788,45 @@ for (const id of ['confirmPreset', 'confirmPresetBar'])
           : 'Preset confirmed. Confirm one more preset to turn on auto-detect.',
       );
     });
-$('deviceSave').onclick = () => safe(() => call('saveRGB'));
-$('adoptRGB').onclick = () => safe(() => mutate('adoptRGB', rgbContext()));
+$('deviceSave').onclick = () => safe(() => colorJob('saveRGB', {}, () => "Colors saved to the controller's memory"));
+for (const id of ['adoptRGB', 'adoptRGBBar'])
+  $(id).onclick = () =>
+    safe(async () => {
+      if (!(await allowSelection())) return;
+      await mutate('adoptRGB', rgbContext());
+      loadEditor();
+      toast("Studio now uses the controller's colors for Bank " + current().activeBank);
+    });
+// A small menu button: opening focuses the first item, arrows move, Escape closes and returns focus.
+function wireMenu(button, list) {
+  const items = () => [...list.querySelectorAll('[role="menuitem"]:not(:disabled)')];
+  const close = (focus) => {
+    list.classList.add('hidden');
+    button.setAttribute('aria-expanded', 'false');
+    if (focus) button.focus();
+  };
+  button.onclick = () => {
+    const open = list.classList.contains('hidden');
+    list.classList.toggle('hidden', !open);
+    button.setAttribute('aria-expanded', String(open));
+    if (open) items()[0]?.focus();
+  };
+  list.addEventListener('keydown', (e) => {
+    const all = items(),
+      at = all.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      all[(at + (e.key === 'ArrowDown' ? 1 : -1) + all.length) % all.length]?.focus();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      close(true);
+    } else if (e.key === 'Tab') close(false);
+  });
+  list.addEventListener('click', (e) => e.target.closest('[role="menuitem"]') && close(false));
+  document.addEventListener('click', (e) => !list.contains(e.target) && !button.contains(e.target) && close(false));
+}
+wireMenu($('rgbMore'), $('rgbMenu'));
 $('pauseBtn').onclick = () =>
   safe(async () => {
     await call('pause');
@@ -1869,7 +1960,7 @@ $('librarySearch').oninput = renderLibrary;
 $('masterVolume').oninput = () => ($('masterValue').textContent = $('masterVolume').value + '%');
 $('masterVolume').onchange = () => safe(() => mutate('masterVolume', { volume: Number($('masterVolume').value) }));
 $('liveColor').onchange = () => safe(() => mutate('settings', { liveColor: $('liveColor').value }));
-for (const id of ['autoConnect', 'autoProfiles', 'reducedMotion', 'liveFeedback', 'extraBanks'])
+for (const id of ['autoConnect', 'autoProfiles', 'reducedMotion', 'liveFeedback', 'extraBanks', 'saveOnSync'])
   $(id).onchange = () => safe(() => mutate('settings', { [id]: $(id).checked }));
 $('quitApp').onclick = () => safe(() => call('quit'));
 $('startWithWindows').onchange = () =>

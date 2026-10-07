@@ -34,7 +34,7 @@ from store import (
 
 VERSION = '0.8.0'
 # Boolean settings the interface may switch.
-SETTING_SWITCHES = ['autoProfiles', 'reducedMotion', 'liveFeedback', 'autoConnect', 'extraBanks']
+SETTING_SWITCHES = ['autoProfiles', 'reducedMotion', 'liveFeedback', 'autoConnect', 'extraBanks', 'saveOnSync']
 # Commands that edit profile content; anything else here is navigation or a preference.
 EDITS = {
     'copyControls': 'Copy configuration',
@@ -174,6 +174,9 @@ class Controller:
         self.performance_auto = False
         self.performance_candidates = set()
         self.rgb_epoch = 0
+        # Each queued color operation gets a job id; the outcome of the last one is in snapshots.
+        self.rgb_job = 0
+        self.rgb_done = None
         self.device_busy = False
         self.hardware_bank_marker = None
         self.live_lit = {}
@@ -416,11 +419,12 @@ class Controller:
                 except Exception as exc:
                     self.event('rgb', {'state': 'error', 'message': str(exc)})
                 continue
-            if command in ['read', 'apply', 'identify', 'save'] and data.get('epoch') != self.rgb_epoch:
+            if command in ['read', 'apply', 'sync', 'identify', 'save'] and data.get('epoch') != self.rgb_epoch:
                 continue
             self.device_busy = True
+            outcome = {'job': data.get('job'), 'ok': True}
             try:
-                if command in ['read', 'apply', 'identify']:
+                if command in ['read', 'apply', 'sync', 'identify']:
                     # Resolve the live preset when the queued operation actually
                     # runs, rather than trusting a stale dropdown or snapshot.
                     self.rgb.header = self.rgb.read_region(4, 0, 12)
@@ -491,20 +495,34 @@ class Controller:
                 elif command == 'apply':
                     self._live_restore()
                     self.rgb.apply(data['colors'], data['preset'], data['bank'])
+                elif command == 'sync':
+                    # Write only the pads that differ, then keep the colors after unplugging
+                    # (unless turned off), and only when every pad is confirmed and no one cancelled.
+                    self._live_restore()
+                    results = self.rgb.apply(data['colors'], data['preset'], data['bank'], only_changed=True)
+                    saved = data['save'] and all(r['ok'] for r in results) and data['epoch'] == self.rgb_epoch
+                    if saved:
+                        self.rgb.save()
+                    outcome['saved'] = saved
+                    outcome['failed'] = sum(not r['ok'] for r in results)
                 elif command == 'identify':
                     self._live_restore()
                     self.rgb.identify(data['preset'], data['bank'])
                 elif command == 'save':
                     self._live_restore()
                     self.rgb.save()
+                if 'job' in data:
+                    self.rgb_done = outcome
             except Exception as exc:
+                if 'job' in data:
+                    self.rgb_done = {'job': data['job'], 'ok': False, 'message': str(exc)}
                 if command == 'connect':
                     self.connection = {'state': 'error', 'message': str(exc)}
                     # Retry automatic connections less and less often (a busy port, MidiSuite open).
                     self._connect_failures += 1
                     self._retry_at = time.monotonic() + min(30, 2**self._connect_failures)
                 self.event(
-                    'rgb' if command in ['read', 'apply', 'identify', 'save'] else 'error',
+                    'rgb' if command in ['read', 'apply', 'sync', 'identify', 'save'] else 'error',
                     {'state': 'error', 'message': str(exc)},
                 )
             finally:
@@ -578,7 +596,7 @@ class Controller:
             for key in sorted(want - set(self.live_lit)):
                 preset, bank, cid = key
                 if not self.rgb.ready:
-                    self.rgb.unlock()
+                    self.rgb.unlock(report=False)
                 address = self.rgb.address(int(cid[3:]), preset, bank)
                 original = '#' + self.rgb.flash[address : address + 3].hex()
                 result = self.rgb.apply({cid: settings['liveColor']}, preset, bank, refresh=False, report=False)[0]
@@ -698,6 +716,7 @@ class Controller:
                     **copy.deepcopy(self.rgb_state),
                     'activePreset': active,
                     'activeBank': self.rgb.active_bank(),
+                    'done': copy.deepcopy(self.rgb_done),
                     'presetDetection': {
                         'located': active is not None,
                         'presets': len({x['preset'] for x in self.store.data['settings'].get('presetSamples', [])}),
@@ -759,8 +778,9 @@ class Controller:
                 raise RuntimeError('Connect the device configuration port first')
             if self.device_busy or not self.device_queue.empty():
                 raise RuntimeError('Wait for the current device operation, or cancel it first')
-            self.device_queue.put_nowait(('save', {'epoch': self.rgb_epoch}))
-            return True
+            self.rgb_job += 1
+            self.device_queue.put_nowait(('save', {'epoch': self.rgb_epoch, 'job': self.rgb_job}))
+            return self.rgb_job
         if command == 'confirmPreset':
             if not self.rgb.header:
                 raise RuntimeError('Connect and read the device first')
@@ -779,7 +799,7 @@ class Controller:
                 'detecting': self.detected_preset() is not None,
                 'presets': len({x['preset'] for x in settings['presetSamples']}),
             }
-        if command in ['readRGB', 'applyRGB', 'identifyRGB']:
+        if command in ['readRGB', 'applyRGB', 'syncRGB', 'identifyRGB']:
             if self.rgb.port is None:
                 raise RuntimeError('Connect the device configuration port first')
             if self.device_busy or not self.device_queue.empty():
@@ -791,7 +811,7 @@ class Controller:
             }
             if payload['bank'] not in BANKS:
                 raise ValueError('Invalid bank')
-            if command == 'applyRGB':
+            if command in ['applyRGB', 'syncRGB']:
                 payload['colors'] = {
                     cid: c['color']
                     for cid, c in self._target(data).items()
@@ -799,11 +819,18 @@ class Controller:
                 }
                 if not payload['colors']:
                     raise ValueError('Select at least one pad to apply hardware colors')
+            if command == 'syncRGB':
+                payload['save'] = self.store.data['settings']['saveOnSync']
+            self.rgb_job += 1
+            payload['job'] = self.rgb_job
             self.rgb_state.pop('identified', None)
             self.device_queue.put_nowait(
-                ({'readRGB': 'read', 'applyRGB': 'apply', 'identifyRGB': 'identify'}[command], payload)
+                (
+                    {'readRGB': 'read', 'applyRGB': 'apply', 'syncRGB': 'sync', 'identifyRGB': 'identify'}[command],
+                    payload,
+                )
             )
-            return True
+            return self.rgb_job
         if command == 'adoptRGB':
             with self.lock, self.store.lock:
                 if self.rgb_state.get('bank') != data.get('bank', self.store.current()['activeBank']):
