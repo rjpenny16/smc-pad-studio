@@ -5,10 +5,13 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import threading
 import uuid
 import zipfile
+
+from lightshow import IDS as LIGHT_SHOWS
 
 COLORS = [
     '#79b8ff',
@@ -36,6 +39,7 @@ TYPES = {
     'pageKnob',
     'playAudio',
     'stopAudio',
+    'lightShow',
     'launch',
     'url',
     'shortcut',
@@ -240,7 +244,20 @@ def settings(value):
     value['window'] = window_size(value.get('window'))
     value['editorSections'] = editor_sections(value.get('editorSections'))
     value['onboarding'] = onboarding(value.get('onboarding'))
+    value['lightShow'] = light_show(value.get('lightShow'))
     return value
+
+
+def light_show(value):
+    """The light show the Device page plays: pattern, steps per second, and one color or each pad's own."""
+    value = value if isinstance(value, dict) else {}
+    color = str(value.get('color', ''))
+    return {
+        'pattern': value.get('pattern') if value.get('pattern') in LIGHT_SHOWS else LIGHT_SHOWS[0],
+        'speed': int(number(value.get('speed'), 5, 1, 10)),
+        'color': color if re.fullmatch(r'#[0-9a-fA-F]{6}', color) else '#ffffff',
+        'padColors': bool(value.get('padColors', True)),
+    }
 
 
 def onboarding(value):

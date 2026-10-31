@@ -19,6 +19,7 @@ from audio import Audio
 import autostart
 import desktop
 from library import Library, display_name, path_key, same_file
+import lightshow
 import media
 from midi import Transport, RGB, ports, bank_for_note, default_mapping, DEVICE_NAMES, NOTE_GROUP
 from store import (
@@ -30,6 +31,7 @@ from store import (
     preset_locator,
     window_size,
     editor_sections,
+    light_show,
     control_clips,
     AUDIO_EXTS,
     BANKS,
@@ -189,6 +191,15 @@ class Controller:
         self.hardware_bank_marker = None
         self.live_lit = {}
         self.live_retry = 0
+        # The running light show; show_lit keeps each painted pad's own color, keyed like live_lit,
+        # and show_painted what each pad shows now, so a step writes only the pads that change.
+        self.show = {'running': False, 'pattern': None, 'step': 0}
+        self.show_frame = {}
+        self.show_lit = {}
+        self.show_painted = {}
+        self.show_next = 0
+        self.show_polled = 0
+        self.show_retry = 0
         self.download = {'state': 'idle'}
         self.download_cancel = threading.Event()
         self.download_thread = None
@@ -409,6 +420,9 @@ class Controller:
         if req['type'] == 'stopAudio':
             self.audio.command('stop')
             return
+        if req['type'] == 'lightShow':
+            self._toggle_show(cfg['value'])
+            return
         try:
             self.action_queue.put_nowait((req, self.cancel_actions))
         except queue.Full:
@@ -421,6 +435,8 @@ class Controller:
             return self.audio.command('play', req)
         if req['type'] == 'stopAudio':
             return self.audio.command('stop')
+        if req['type'] == 'lightShow':
+            return self._toggle_show(req['value'])
         if req['type'] == 'url' and not str(req['value']).lower().startswith(('https://', 'http://')):
             raise ValueError('Websites must use http or https')
         return actions.action(req)
@@ -471,7 +487,7 @@ class Controller:
     def _devices(self):
         while not self.stop.is_set():
             try:
-                command, data = self.device_queue.get(timeout=0.2)
+                command, data = self.device_queue.get(timeout=0.02 if self.show['running'] else 0.2)
             except queue.Empty:
                 # Keep-alive runs here, between queued operations, so it never
                 # occupies the queue and blocks a user's read/apply request.
@@ -479,6 +495,7 @@ class Controller:
                     self.rgb.keep_alive()
                     self._detect_preset()
                     self._live_feedback()
+                    self._light_show()
                 except Exception as exc:
                     self.event('rgb', {'state': 'error', 'message': str(exc)})
                 continue
@@ -495,7 +512,13 @@ class Controller:
                     active = self.detected_preset()
                     if active is not None:
                         data['preset'] = active
+                if command in ['read', 'apply', 'sync', 'identify', 'save']:
+                    self._show_stop('Light show stopped for the color operation')
                 if command == 'connect':
+                    try:
+                        self._show_restore()
+                    except Exception:
+                        logging.exception('Light show restore before reconnecting failed')
                     self.available = ports()
                     requested = data.get('performanceInput')
                     for port_id in list(self.transport.inputs):
@@ -594,6 +617,7 @@ class Controller:
                 self.device_busy = False
         try:
             self._live_restore()
+            self._show_restore()
         except Exception:
             logging.exception('Live feedback restore failed')
 
@@ -635,6 +659,7 @@ class Controller:
         want = set()
         if (
             settings.get('liveFeedback')
+            and not self.show['running']
             and self.rgb.port is not None
             and self.rgb.flash is not None
             and time.monotonic() >= self.live_retry
@@ -680,6 +705,102 @@ class Controller:
             if self.rgb.apply({cid: color}, preset, bank, refresh=False, report=False)[0]['ok']:
                 self.live_lit.pop(key)
 
+    def _toggle_show(self, pattern=''):
+        """A pad's light show action: start the show (its own pattern, or the Device page's),
+        or stop the one that is running."""
+        pattern = pattern if pattern in lightshow.IDS else ''
+        if self.show['running'] and pattern in ['', self.show['pattern']]:
+            self._set_show(False)
+        else:
+            self._set_show(True, pattern)
+
+    def _set_show(self, running, pattern='', message=None):
+        with self.lock:
+            pattern = pattern or self.store.data['settings']['lightShow']['pattern']
+            if running == self.show['running'] and (not running or pattern == self.show['pattern']):
+                return
+            self.show = {'running': running, 'pattern': pattern if running else None, 'step': 0}
+            self.show_next = 0
+            if not running:
+                self.show_frame = {}
+        name = dict((p[0], p[1]) for p in lightshow.PATTERNS)[pattern]
+        self.event('lighting', {'message': message or ('Light show: ' + name if running else 'Light show stopped')})
+
+    def _show_stop(self, message):
+        """Stop a running show before other color work, and put the pads back first."""
+        self._set_show(False, message=message)
+        self._show_restore()
+
+    def _light_show(self):
+        """Step the running light show and paint the pads that change on the controller.
+        Steps are shown in order: when the controller is slower than the speed, the show slows down."""
+        if not self.show['running']:
+            if self.show_lit:
+                self._show_restore()
+            return
+        now = time.monotonic()
+        if now < self.show_next:
+            return
+        settings = self.store.data['settings']
+        show = settings['lightShow']
+        self.show_next = max(now, self.show_next + 1 / show['speed'])
+        with self.lock, self.store.lock:
+            bank = self.store.current()['activeBank']
+            pads = {cid: c['color'] for cid, c in self.store.controls().items() if cid.startswith('pad')}
+            frame = lightshow.frame(
+                self.show['pattern'], self.show['step'], None if show['padColors'] else show['color'], pads
+            )
+            self.show['step'] += 1
+            self.show_frame = frame
+        if self.rgb.port is None or now < self.show_retry:
+            return
+        with self.rgb.lock:
+            try:
+                if now - self.show_polled >= 0.5:
+                    # Painting counts as activity, so poll the header here to follow PAD BANK and presets.
+                    self.show_polled = now
+                    self.rgb.keep_alive(force=True)
+                    self._detect_preset()
+                    with self.lock, self.store.lock:
+                        bank = self.store.current()['activeBank']
+                preset = settings['hardwarePreset']
+                # Pads of another bank or preset go back to their own colors before this one is painted.
+                self._show_restore(keep=(preset, bank))
+                if not self.rgb.ready:
+                    self.rgb.unlock(report=False)
+                for cid in frame:
+                    key = (preset, bank, cid)
+                    if key not in self.show_lit:
+                        address = self.rgb.address(int(cid[3:]), preset, bank)
+                        self.show_lit[key] = '#' + self.rgb.flash[address : address + 3].hex()
+                        self.show_painted.pop(key, None)
+                changes = {
+                    cid: color for cid, color in frame.items() if self.show_painted.get((preset, bank, cid)) != color
+                }
+                self.rgb.paint(changes, preset, bank)
+                self.show_painted.update({(preset, bank, cid): color for cid, color in changes.items()})
+            except Exception as exc:
+                # What the pads show is uncertain now, so the next step writes all of them.
+                self.show_painted.clear()
+                self.show_retry = time.monotonic() + 5
+                self.event('error', {'message': 'Light show paused on the controller for 5 s: ' + str(exc)})
+
+    def _show_restore(self, keep=None):
+        """Put pads a light show painted back to their own colors, checked against the device.
+        keep=(preset, bank) leaves that bank's pads painted."""
+        with self.rgb.lock:
+            groups = {}
+            for (preset, bank, cid), color in self.show_lit.items():
+                if (preset, bank) != keep:
+                    groups.setdefault((preset, bank), {})[cid] = color
+            for (preset, bank), colors in groups.items():
+                if self.rgb.port is None:
+                    return
+                for result in self.rgb.apply(colors, preset, bank, refresh=False, report=False):
+                    if result['ok']:
+                        self.show_lit.pop((preset, bank, result['pad']), None)
+                        self.show_painted.pop((preset, bank, result['pad']), None)
+
     def _check_usb(self):
         """Notice an unplugged controller, and queue a reconnect once it is back."""
         self.available = ports()
@@ -698,6 +819,9 @@ class Controller:
                 'message': 'USB disconnected. Studio reconnects when the controller is plugged back in.',
             }
             self.primary = ''
+            # Unplugging powers the controller off, and the show's unsaved colors with it.
+            self.show_lit.clear()
+            self.show_painted.clear()
             self.event('device', {'message': 'USB disconnected'})
         elif (
             not self.primary
@@ -809,6 +933,12 @@ class Controller:
                     'logs': list(self.logs)[-70:],
                     'droppedMidi': self.transport.dropped,
                     'download': copy.deepcopy(self.download),
+                    'lightShow': {
+                        'running': self.show['running'],
+                        'pattern': self.show['pattern'],
+                        'frame': dict(self.show_frame),
+                        'patterns': [{'id': i, 'name': n, 'description': d} for i, n, d in lightshow.PATTERNS],
+                    },
                 }
                 if data.get('revision') != self.revision:
                     result['store'] = self.store.snapshot()
@@ -831,6 +961,29 @@ class Controller:
                 self.store.data['settings']['editorSections'] = editor_sections(data)
                 self.store.persist()
             return True
+        if command == 'lightShow':
+            # The show's settings are a preference like the editor sections: no Undo step.
+            with self.lock, self.store.lock:
+                settings = self.store.data['settings']
+                if 'pattern' in data and data['pattern'] not in lightshow.IDS:
+                    raise ValueError('Unknown light show')
+                if 'color' in data and not re.fullmatch(r'#[0-9a-fA-F]{6}', str(data['color'])):
+                    raise ValueError('Invalid light show color')
+                show = light_show(
+                    {
+                        **settings['lightShow'],
+                        **{k: data[k] for k in ['pattern', 'speed', 'color', 'padColors'] if k in data},
+                    }
+                )
+                if show != settings['lightShow']:
+                    settings['lightShow'] = show
+                    self.store.persist()
+                    self._changed()
+            if 'running' in data:
+                self._set_show(bool(data['running']))
+            elif self.show['running'] and self.show['pattern'] != show['pattern']:
+                self._set_show(True, show['pattern'])
+            return self.show['running']
         if command == 'connect':
             self.device_queue.put_nowait(('connect', copy.deepcopy(data)))
             return True
@@ -841,6 +994,11 @@ class Controller:
         if command == 'disconnect':
             self.rgb.cancel.set()
             with self.rgb.lock:
+                self._set_show(False)
+                try:
+                    self._show_restore()
+                except Exception as exc:
+                    self.event('error', {'message': 'Could not restore the pads after the light show: ' + str(exc)})
                 for port in list(self.transport.inputs):
                     self.transport.close_input(port)
                 self.transport.close_output()
