@@ -1,6 +1,6 @@
-# SMC-PAD Studio 0.8.0
+# SMC-PAD Studio 0.9.0
 
-Download `SMC-PAD-Studio-v0.8.0.exe` from this repository's **Releases** page and run it. Each release also carries `SHA256.txt` for checking the download. No Python installation is needed. This is a dedicated Windows desktop window with a native MIDI/audio runtime and a tray menu. It loads its bundled interface directly; there is no localhost page or HTTP server to start.
+Download `SMC-PAD-Studio-v0.9.0.exe` from this repository's **Releases** page and run it. Each release also carries `SHA256.txt` for checking the download. No Python installation is needed. This is a dedicated Windows desktop window with a native MIDI/audio runtime and a tray menu. It loads its bundled interface directly; there is no localhost page or HTTP server to start.
 
 ## First session
 
