@@ -37,7 +37,7 @@ from store import (
     BANKS,
 )
 
-VERSION = '0.8.0'
+VERSION = '0.9.0'
 # Boolean settings the interface may switch.
 SETTING_SWITCHES = ['autoProfiles', 'reducedMotion', 'liveFeedback', 'autoConnect', 'extraBanks', 'saveOnSync']
 # Commands that edit profile content; anything else here is navigation or a preference.
