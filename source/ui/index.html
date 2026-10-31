@@ -197,6 +197,13 @@
                     <button class="btn tiny" id="readRGB" title="Read the pad colors stored on the controller">
                       Read
                     </button>
+                    <button
+                      class="btn tiny"
+                      id="showToggle"
+                      title="Play the light show chosen on the Device page. Nothing is saved to the controller."
+                    >
+                      <svg><use href="#i-play" /></svg><span>Light show</span>
+                    </button>
                     <div class="menu">
                       <button
                         class="btn tiny"
@@ -299,6 +306,13 @@
                           <textarea id="valueInput" class="grow" rows="2"></textarea
                           ><button type="button" class="btn tiny hidden" id="browseBtn">Browse</button>
                         </div>
+                      </div>
+                      <div class="field hidden" id="lightShowField">
+                        <label for="lightShowSelect">Light show</label
+                        ><select id="lightShowSelect"></select>
+                        <p class="helper">
+                          Press once to start the show, again to stop it. A pad with another show switches to it.
+                        </p>
                       </div>
                       <div class="field hidden" id="shortcutField">
                         <label for="shortcutInput">Keys to press</label>
@@ -702,6 +716,48 @@
                       restores it, so you can tell which stored preset the controller is showing.
                     </p>
                     <div id="rgbResults"></div>
+                  </div>
+                </div>
+                <div class="panel">
+                  <div class="panel-head">
+                    <h3 style="margin: 0">Light shows</h3>
+                    <span class="tag" id="showStatus">Stopped</span>
+                  </div>
+                  <div class="panel-body">
+                    <p class="muted">
+                      A light show moves light across the pads in a repeating pattern. It only changes what the pads
+                      show while it plays: stopping it, syncing colors or quitting Studio puts every pad back, and
+                      nothing is saved to the controller's memory.
+                    </p>
+                    <div class="show-layout">
+                      <div class="show-patterns" id="showPatterns" role="radiogroup" aria-label="Pattern"></div>
+                      <div class="show-preview" id="showPreview" aria-hidden="true"></div>
+                    </div>
+                    <div class="row2" style="margin-top: 14px">
+                      <div class="field">
+                        <label for="showSpeed">Speed: <span id="showSpeedValue"></span></label
+                        ><input id="showSpeed" type="range" min="1" max="10" step="1" />
+                      </div>
+                      <div class="field">
+                        <label for="showColorMode">Colors</label>
+                        <div class="row">
+                          <select id="showColorMode" class="grow">
+                            <option value="pads">Each pad's own color</option>
+                            <option value="one">One color</option></select
+                          ><input id="showColor" class="show-color" type="color" aria-label="Light show color" />
+                        </div>
+                      </div>
+                    </div>
+                    <div class="row wrap" style="margin-top: 6px">
+                      <button class="btn primary" id="showStart">
+                        <svg><use href="#i-play" /></svg><span>Start light show</span>
+                      </button>
+                    </div>
+                    <p class="helper">
+                      The controller shows every step in turn, so patterns that change many pads at once (Breathe,
+                      Rainbow) can run slower than the speed you pick. To play shows from the controller, give a pad or
+                      button the action Start / stop a light show. Rainbow always uses its own colors.
+                    </p>
                   </div>
                 </div>
               </div>

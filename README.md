@@ -42,6 +42,17 @@ The SMC-PAD stores eight presets, and only the one it is currently using lights 
 3. To try colors without keeping them, turn off Settings → **Keep synced pad colors after unplugging the controller**. The Device page then offers **Save to controller memory**; without a save, the controller may return to its saved colors at power-up.
 4. The More menu (⋯) has **Identify preset**, which flashes the bank's 16 pads white and restores them, and **Use controller colors**, which copies the controller's colors into Studio (with Undo). Presets are changed on the controller with SHIFT plus Pads 1–8; use PAD BANK off when selecting a preset. If Studio cannot tell which preset is active, a preset picker appears next to the status.
 
+## Light shows
+
+A light show moves light across the pads in a repeating pattern instead of showing one fixed color per pad.
+
+- Open the Device page's **Light shows** panel and pick a pattern: **Chase** (a light runs around the edge), **Snake** (weaves row by row through all 16 pads), **Wave** (a column sweeps left and right), **Rain** (drops fall down the columns), **Ripple** (rings spread from the center), **Sparkle** (pads twinkle at random), **Breathe** (every pad fades in and out) or **Rainbow** (colors flow diagonally). A small grid beside the list previews the show while it plays, and the canvas pads glow in the same colors.
+- **Speed** sets how many steps a second the show tries to play (1–10). **Colors** uses each pad's own color, or one color for the whole show. Rainbow always uses its own colors.
+- **Start light show** on the Device page, or **Light show** on the canvas lighting bar, starts and stops it. Choosing another pattern while a show plays switches to it.
+- To play shows from the controller, give a pad or button **Start / stop a light show**. It plays the show chosen on the Device page, or a pattern of its own: press once to start, again to stop, and a pad with a different pattern switches to it. Macros can start and stop shows too.
+- Shows follow the PAD BANK switch and the active preset. They are temporary: Studio writes only the pads that change from one step to the next, never saves show colors to the controller's memory, and puts every pad back to its stored color when the show stops, before **Sync colors**, **Read**, **Identify preset** or a save, and when Studio quits. Unplugging the controller also returns it to its saved colors. While a show plays, **Light pads while their audio clips play** waits until it stops.
+- The controller acknowledges each pad write in turn, so patterns that change many pads at once (Breathe, Rainbow) may play more slowly than the chosen speed.
+
 Settings → **Light pads while their audio clips play** paints a pad in the playing color while its clip plays and restores it afterwards. These temporary colors are never saved to the device.
 
 Windows can expose the configuration endpoint as `SMC-PAD`, `MIDIIN2/3 (SMC-PAD)` or `MIDIOUT2/3 (SMC-PAD)` instead of a name containing “Private.” Discovery verifies replies instead of requiring that exact label. Performance input discovery also follows actual pad/encoder activity; manual selection takes precedence.

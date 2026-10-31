@@ -12,6 +12,8 @@ Run `python main.py --ui-check --no-dialog` for a real native WebView2/bridge ch
 
 UI preferences that must survive a restart (open editor sections, the Get started checklist) are kept in `studio.json` settings, because the WebView2 page is loaded from a string and has no browser storage.
 
+`lightshow.py` holds the light show patterns as pure functions of the step number. `Controller._light_show` runs on the device thread between queued color operations: it steps the show, remembers each pad's stored color before its first write, and paints only the pads that changed with `RGB.paint` (acknowledged writes without readback, for speed). Restoring goes through the verified `RGB.apply`. Show colors are never saved to the controller.
+
 `SMC_STUDIO_DATA` overrides the data folder for development/testing. Production profiles are never silently imported from browser storage; legacy JSON imports are explicit.
 
 Hardware verification is opt-in: `python verify_hardware.py --hardware report.json`. Close other MIDI apps first. This script briefly changes Pad 1 on hardware preset 1 in both banks, verifies readback, restores it, checks full-bank original-color writes, and compares the complete configuration before/after. It writes only validated RGB addresses and attempts recovery if a test fails. Do not run it while performing live with the controller.

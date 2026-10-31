@@ -25,6 +25,7 @@ from store import (
     window_size,
     editor_sections,
     iter_clips,
+    light_show,
 )
 from library import Library
 from midi import RGB, encode, decode, bank_for_note, default_mapping
@@ -33,6 +34,7 @@ from audio import Audio
 import actions
 import autostart
 import desktop
+import lightshow
 import media
 import ui_bundle
 
@@ -990,6 +992,109 @@ class RegressionTests(unittest.TestCase):
                 self.assertEqual(controller.rgb_state['state'], 'available')
             finally:
                 controller.close()
+
+    def test_light_show_patterns_move_across_all_pads(self):
+        pads = {f'pad{i}': '#204080' for i in range(1, 17)}
+        for pattern in lightshow.IDS:
+            frames = [lightshow.frame(pattern, step, None, pads) for step in range(48)]
+            # The same step always looks the same, so a show repeats exactly.
+            self.assertEqual(frames[5], lightshow.frame(pattern, 5, None, pads))
+            for frame in frames:
+                self.assertEqual(list(frame), lightshow.PADS)
+                self.assertTrue(all(re.fullmatch(r'#[0-9a-f]{6}', c) for c in frame.values()), pattern)
+            # It moves, and every pad lights at some point (Chase keeps to the edge).
+            self.assertNotEqual(frames[0], frames[1], pattern)
+            for cid in lightshow.PADS if pattern != 'chase' else []:
+                self.assertTrue(any(f[cid] != '#000000' for f in frames), pattern + ' never lights ' + cid)
+        # Chase: one pad at full brightness with a fading tail, along the edge only.
+        chase = lightshow.frame('chase', 0, '#ff0000')
+        self.assertEqual(chase['pad1'], '#ff0000')
+        self.assertEqual(sum(c != '#000000' for c in chase.values()), 3)
+        self.assertTrue(all(chase[cid] == '#000000' for cid in ['pad6', 'pad7', 'pad10', 'pad11']))
+        self.assertEqual(lightshow.frame('chase', 1, '#ff0000')['pad2'], '#ff0000')
+        # Without one color, each pad lights in its own Studio color.
+        self.assertEqual(lightshow.frame('chase', 0, None, {**pads, 'pad1': '#00ff00'})['pad1'], '#00ff00')
+        with self.assertRaises(ValueError):
+            lightshow.frame('nope', 0, '#ffffff')
+        self.assertEqual(
+            light_show({'pattern': 'nope', 'speed': 99, 'color': 'red'}),
+            {'pattern': 'chase', 'speed': 10, 'color': '#ffffff', 'padColors': True},
+        )
+
+    def test_light_show_paints_the_pads_then_puts_them_back(self):
+        def wait(condition, message):
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if condition():
+                    return
+                time.sleep(0.01)
+            self.fail(message)
+
+        def pad(n, bank=0x418):
+            address = bank + (n - 1) * 26
+            return bytes(transport.memory[address : address + 3]).hex()
+
+        with tempfile.TemporaryDirectory() as folder:
+            transport = FakeTransport()
+            controller = Controller(folder, transport)
+            try:
+                controller.rgb.port = 0
+                controller.rgb.unlock()
+                original = [pad(n) for n in range(1, 17)]
+                self.assertFalse(controller.request('lightShow', {'pattern': 'nope'})['ok'])
+                self.assertFalse(controller.request('lightShow', {'color': 'red'})['ok'])
+                self.assertTrue(
+                    controller.request(
+                        'lightShow', {'pattern': 'chase', 'speed': 10, 'padColors': False, 'color': '#ff0000'}
+                    )['ok']
+                )
+                self.assertFalse(controller.show['running'])
+                self.assertEqual(controller.store.data['settings']['lightShow']['color'], '#ff0000')
+                self.assertTrue(controller.request('lightShow', {'running': True})['value'])
+                wait(lambda: pad(1) == 'ff0000', 'The show never lit Pad 1')
+                wait(lambda: pad(1) != 'ff0000' and pad(2) == 'ff0000', 'The light never moved on')
+                # Pressing PAD BANK moves the show to Bank B and puts Bank A back.
+                original_b = [pad(n, 0xC38) for n in range(1, 17)]
+                transport.header[11] = 1
+                wait(
+                    lambda: (
+                        [pad(n) for n in range(1, 17)] == original and 'ff0000' in [pad(n, 0xC38) for n in range(1, 17)]
+                    ),
+                    'The show did not follow PAD BANK',
+                )
+                transport.header[11] = 0
+                wait(lambda: [pad(n, 0xC38) for n in range(1, 17)] == original_b, 'Bank B was not put back')
+                snapshot = controller.request('snapshot')['value']['lightShow']
+                self.assertEqual((snapshot['running'], snapshot['pattern']), (True, 'chase'))
+                self.assertEqual(len(snapshot['frame']), 16)
+                self.assertEqual([p['id'] for p in snapshot['patterns']], lightshow.IDS)
+                # A light show is temporary: it never saves to the controller's memory.
+                self.assertEqual(transport.saves, 0)
+                # A step writes only the pads that change: three for a moving light with its tail.
+                before = len(transport.sent)
+                step = controller.show['step']
+                wait(lambda: controller.show['step'] >= step + 3, 'The show stopped stepping')
+                writes = sum(cmd == 0x22 for cmd, _data in transport.sent[before:])
+                self.assertLessEqual(writes, (controller.show['step'] - step + 1) * 3)
+                # A pad action switches to its own pattern, and the same action again stops it.
+                controller._toggle_show('wave')
+                self.assertEqual(controller.show['pattern'], 'wave')
+                controller._toggle_show('wave')
+                self.assertFalse(controller.show['running'])
+                wait(lambda: [pad(n) for n in range(1, 17)] == original, 'The pads were not put back')
+                self.assertEqual((controller.show_lit, controller.show_painted), ({}, {}))
+                # Syncing colors stops a running show and restores the pads before it writes.
+                controller._toggle_show('')
+                self.assertEqual(controller.show['pattern'], 'chase')
+                wait(lambda: pad(1) == 'ff0000' or pad(2) == 'ff0000', 'The show did not start again')
+                controller.request('readRGB', {'bank': 'A'})
+                wait(lambda: controller.rgb_state.get('state') == 'synced', 'Read did not finish')
+                self.assertFalse(controller.show['running'])
+                self.assertEqual(controller.rgb_state['colors']['pad1'], '#' + original[0])
+                self.assertEqual(controller.show_lit, {})
+            finally:
+                controller.close()
+            self.assertEqual(Store(folder).data['settings']['lightShow']['pattern'], 'chase')
 
     def test_sync_writes_only_changed_pads_and_saves_when_all_succeed(self):
         def sync(state, **outcome):

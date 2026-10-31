@@ -1452,6 +1452,77 @@ textarea {
   color: var(--danger);
   border-color: #f28a9640;
 }
+/* Light shows: pattern choices beside a live 4 x 4 preview laid out like the controller. */
+.show-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 132px;
+  gap: var(--sp-4);
+  align-items: start;
+  margin-top: var(--sp-3);
+}
+.show-patterns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.show-pattern {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: var(--fs-sm);
+}
+.show-pattern span {
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+.show-pattern:hover {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+}
+.show-pattern[aria-checked='true'] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.show-pattern.playing strong::after {
+  content: ' · playing';
+  color: var(--accent);
+  font-weight: 400;
+}
+.show-preview {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 5px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #0c0e12;
+}
+.show-preview i {
+  aspect-ratio: 1;
+  border-radius: 4px;
+  background: var(--led);
+  border: 1px solid #ffffff14;
+  transition: background 0.12s;
+}
+.field input.show-color {
+  flex: none;
+  width: 52px;
+}
+.pad-grid.show-on .pad:after {
+  background: var(--led, #000);
+  box-shadow: 0 0 14px var(--led, #000);
+  opacity: 1;
+  height: 4px;
+}
+.pad-grid.show-on .pad {
+  border-color: color-mix(in srgb, var(--led, #000) 70%, #252b35);
+  box-shadow: inset 0 0 30px color-mix(in srgb, var(--led, #000) 55%, transparent);
+}
 .port-list {
   font:
     11px/1.8 Consolas,
@@ -1862,6 +1933,12 @@ textarea {
   }
 }
 @media (max-width: 850px) {
+  .show-layout {
+    grid-template-columns: 1fr;
+  }
+  .show-preview {
+    max-width: 160px;
+  }
   .studio-layout,
   .library-layout {
     grid-template-columns: 1fr;

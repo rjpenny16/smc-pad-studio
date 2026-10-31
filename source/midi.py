@@ -502,6 +502,27 @@ class RGB:
                 )
             return results
 
+    def paint(self, colors, preset, bank):
+        """Show temporary pad colors quickly, for a light show. Each write must be acknowledged
+        but is not read back, and the memory copy keeps the stored colors, so apply() with
+        those colors puts the pads back. Nothing here saves to the device's memory."""
+        with self.lock:
+            self.cancel.clear()
+            if not self.ready:
+                self.unlock(report=False)
+            # Validate every address before the first write, as apply() does.
+            writes = []
+            for cid, color in colors.items():
+                rgb = bytes.fromhex(color.removeprefix('#'))
+                if not cid.startswith('pad') or len(rgb) != 3:
+                    raise ValueError('Invalid pad color')
+                writes.append((self.address(int(cid[3:]), preset, bank), rgb))
+            for address, rgb in writes:
+                data = b'\x05' + address.to_bytes(4, 'little') + b'\x03\0\0' + rgb
+                reply, ack = self.request(0x22, data, predicate=lambda cmd, data: cmd == 0 and len(data) >= 1)
+                if ack[0] != 0:
+                    raise RuntimeError('Device rejected the RGB write (status ' + str(ack[0]) + ')')
+
     def save(self):
         """Ask the device to persist its configuration, as MidiSuite's Save does
         (a zero-length region-5 write). Color writes alone may not survive a
@@ -551,10 +572,11 @@ class RGB:
             )
             return originals
 
-    def keep_alive(self):
+    def keep_alive(self, force=False):
         # Mirror the official app: poll the 12-byte global block about twice a
         # second. It changes when the preset/bank is switched on the hardware.
-        if self.port is None or self.header is None or time.monotonic() - self.last_activity < 0.4:
+        # A light show writes constantly, so it forces the poll to keep noticing PAD BANK.
+        if self.port is None or self.header is None or (not force and time.monotonic() - self.last_activity < 0.4):
             return
         if not self.lock.acquire(blocking=False):
             return

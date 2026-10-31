@@ -13,6 +13,7 @@ const ACTIONS = [
   ['macro', 'Multi-step macro', 'Automation'],
   ['nextPage', 'Next page', 'Pages'],
   ['previousPage', 'Previous page', 'Pages'],
+  ['lightShow', 'Start / stop a light show', 'Lighting'],
   ['launch', 'Launch app or file', 'Apps & input'],
   ['url', 'Open a website', 'Apps & input'],
   ['shortcut', 'Keyboard shortcut', 'Apps & input'],
@@ -570,6 +571,7 @@ function writeValueFields(action, value) {
   value = String(value ?? '');
   $('valueInput').value = action in VALUE_ACTIONS || action === 'playAudio' ? value : '';
   $('shortcutInput').value = action === 'shortcut' ? shortcutText(value) : '';
+  showOptions($('lightShowSelect'), action === 'lightShow' ? value : '');
   // Like controller._trigger: without a "|" both directions use the same shortcut.
   const sides = action === 'twoWayShortcutKnob' ? value.split('|') : [''];
   $('ccwInput').value = shortcutText(sides[0].trim());
@@ -578,6 +580,7 @@ function writeValueFields(action, value) {
 // The value an action saves, read back from its fields.
 function fieldValue(action) {
   if (action === 'shortcut') return shortcutValue($('shortcutInput').value);
+  if (action === 'lightShow') return $('lightShowSelect').value;
   if (action === 'twoWayShortcutKnob') {
     const sides = [$('ccwInput').value, $('cwInput').value].map(shortcutValue);
     return sides.some(Boolean) ? sides.join(' | ') : '';
@@ -633,6 +636,7 @@ function renderFields() {
   const action = $('actionSelect').value;
   $('valueField').classList.toggle('hidden', !(action in VALUE_ACTIONS));
   $('shortcutField').classList.toggle('hidden', action !== 'shortcut');
+  $('lightShowField').classList.toggle('hidden', action !== 'lightShow');
   $('twoWayFields').classList.toggle('hidden', action !== 'twoWayShortcutKnob');
   $('audioFields').classList.toggle('hidden', action !== 'playAudio');
   $('macroFields').classList.toggle('hidden', action !== 'macro');
@@ -778,6 +782,8 @@ function stepField(step, n) {
       return `<input inputmode="url" value="${value}" placeholder="https://example.com" data-text aria-label="Step ${n}: website address">`;
     case 'typeText':
       return `<input value="${value}" placeholder="The text to type" data-text aria-label="Step ${n}: text to type">`;
+    case 'lightShow':
+      return `<select data-text aria-label="Step ${n}: light show">${showOptionsHtml(step.value || '')}</select>`;
     case 'playAudio':
       return `<div class="row"><span class="step-clip grow" title="${value}">${esc(step.value ? clipName(step.value.split(/[\\/]/).pop()) : 'No clip chosen')}</span><button type="button" class="btn tiny" data-clip>Choose clip</button></div>`;
     default:
@@ -1063,6 +1069,7 @@ function renderLive(previous) {
   );
   renderColorJobs();
   renderPlayingPads();
+  renderLightShow();
   renderMixer();
   renderColorState();
   if (draft) {
@@ -1139,6 +1146,66 @@ function padType(cid, cfg, playing) {
   if (playing) return cfg.loop ? 'Looping' : 'Playing';
   if (missingClips.includes(cid)) return 'Missing clip';
   return cfg.action === 'none' ? 'Unassigned' : label(cfg.action);
+}
+// Light shows: the patterns come from the native side (lightshow.PATTERNS) with each snapshot.
+const showPatterns = () => state?.lightShow?.patterns || [];
+const showName = (id) => showPatterns().find((p) => p.id === id)?.name || id;
+// An empty value plays whichever show is chosen on the Device page.
+function showOptionsHtml(value) {
+  return [['', 'The show chosen on the Device page'], ...showPatterns().map((p) => [p.id, p.name])]
+    .map(([id, name]) => `<option value="${esc(id)}"${id === value ? ' selected' : ''}>${esc(name)}</option>`)
+    .join('');
+}
+function showOptions(select, value) {
+  select.innerHTML = showOptionsHtml(value);
+  select.value = value;
+}
+// The show's colors on a 4 x 4 grid laid out like the controller (Pad 13 to 16 on top).
+const padOrder = (cid) => {
+  const n = Number(cid.slice(3)) - 1;
+  return (3 - Math.floor(n / 4)) * 4 + (n % 4);
+};
+function renderLightShow() {
+  const show = state.lightShow,
+    settings = store?.settings.lightShow;
+  if (!show || !settings) return;
+  const running = show.running;
+  for (const id of ['showToggle', 'showStart'])
+    renderOnChange($(id), running, (on) =>
+      id === 'showToggle'
+        ? icon(on ? 'stop' : 'play') + `<span>${on ? 'Stop light show' : 'Light show'}</span>`
+        : icon(on ? 'stop' : 'play') + `<span>${on ? 'Stop light show' : 'Start light show'}</span>`,
+    );
+  $('showStatus').textContent = running ? 'Playing: ' + showName(show.pattern) : 'Stopped';
+  $('showStatus').className = 'tag' + (running ? ' good' : '');
+  renderOnChange(
+    $('showPatterns'),
+    [showPatterns(), settings.pattern, running && show.pattern],
+    ([patterns, chosen, playing]) =>
+      patterns
+        .map(
+          (p) =>
+            `<button type="button" role="radio" class="show-pattern${p.id === playing ? ' playing' : ''}" aria-checked="${p.id === chosen}" data-pattern="${esc(p.id)}"><strong>${esc(p.name)}</strong><span>${esc(p.description)}</span></button>`,
+        )
+        .join(''),
+  );
+  if (document.activeElement !== $('showSpeed')) {
+    $('showSpeed').value = settings.speed;
+    $('showSpeedValue').textContent = settings.speed + (settings.speed === 1 ? ' step' : ' steps') + ' a second';
+  }
+  $('showColorMode').value = settings.padColors ? 'pads' : 'one';
+  $('showColor').value = settings.color;
+  $('showColor').disabled = settings.padColors;
+  const frame = running ? show.frame : {};
+  const cells = Array.from({ length: 16 }, (_, i) => 'pad' + (i + 1));
+  renderOnChange($('showPreview'), frame, (f) =>
+    cells.map((cid) => `<i style="order:${padOrder(cid)};--led:${esc(f[cid] || '#000000')}"></i>`).join(''),
+  );
+  // The canvas pads glow in the show's colors while it plays.
+  $('pads').classList.toggle('show-on', running);
+  for (const el of $('pads').children)
+    if (running && frame[el.dataset.id]) el.style.setProperty('--led', frame[el.dataset.id]);
+    else el.style.removeProperty('--led');
 }
 function renderPlayingPads() {
   if (!state) return;
@@ -2190,6 +2257,20 @@ $('librarySearch').oninput = renderLibrary;
 $('masterVolume').oninput = () => ($('masterValue').textContent = $('masterVolume').value + '%');
 $('masterVolume').onchange = () => safe(() => mutate('masterVolume', { volume: Number($('masterVolume').value) }));
 $('liveColor').onchange = () => safe(() => mutate('settings', { liveColor: $('liveColor').value }));
+for (const id of ['showToggle', 'showStart'])
+  $(id).onclick = () => safe(() => mutate('lightShow', { running: !state.lightShow.running }));
+$('showPatterns').onclick = (e) => {
+  const button = e.target.closest('[data-pattern]');
+  if (button) safe(() => mutate('lightShow', { pattern: button.dataset.pattern }));
+};
+$('showSpeed').oninput = () => {
+  const speed = Number($('showSpeed').value);
+  $('showSpeedValue').textContent = speed + (speed === 1 ? ' step' : ' steps') + ' a second';
+};
+$('showSpeed').onchange = () => safe(() => mutate('lightShow', { speed: Number($('showSpeed').value) }));
+$('showColorMode').onchange = () => safe(() => mutate('lightShow', { padColors: $('showColorMode').value === 'pads' }));
+$('showColor').onchange = () => safe(() => mutate('lightShow', { color: $('showColor').value, padColors: false }));
+$('lightShowSelect').onchange = markDirty;
 for (const id of ['autoConnect', 'autoProfiles', 'reducedMotion', 'liveFeedback', 'extraBanks', 'saveOnSync'])
   $(id).onchange = () => safe(() => mutate('settings', { [id]: $(id).checked }));
 $('quitApp').onclick = () => safe(() => call('quit'));
